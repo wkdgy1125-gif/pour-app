@@ -1,0 +1,20 @@
+{
+  "name": "콘크리트 타설물량 집계",
+  "short_name": "타설집계",
+  "description": "구조도면에서 구획을 그려 콘크리트 타설물량을 집계하고 엑셀로 내보내는 앱",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f2ee",
+  "theme_color": "#fbfaf7",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "file_handlers": [
+    { "action": "./", "accept": { "application/pdf": [".pdf"], "image/*": [".jpg", ".jpeg", ".png"], "application/dxf": [".dxf"] } }
+  ]
+}
