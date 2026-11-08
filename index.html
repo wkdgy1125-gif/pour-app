@@ -181,6 +181,17 @@ body{touch-action:manipulation}
 .rv tr.dup td{background:#fff8e6}
 details.raw{margin-top:6px;font-size:12px}
 details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;border-radius:6px;white-space:pre-wrap;font:11px var(--mono)}
+.odbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.odbar .btn.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.odpath{font-size:12px;color:var(--ink2);margin:4px 0;display:flex;gap:4px;flex-wrap:wrap}
+.odpath a{color:var(--sel);cursor:pointer}
+.odlist{max-height:48vh;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff}
+.oditem{display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid var(--line2);cursor:pointer;font-size:13px}
+.oditem:hover{background:#f6f5f1}
+.oditem.dis{opacity:.45;cursor:default}
+.oditem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oditem .sz{font:11px var(--mono);color:var(--ink3);white-space:nowrap}
+.oditem.sel{background:#e3eaff}
 </style>
 </head>
 <body>
@@ -205,6 +216,7 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
     <h3>도면</h3>
     <label class="drop" id="drop">PDF · JPG · PNG · DXF · DWG<br><span class="note">클릭하거나 끌어다 놓기</span>
       <input type="file" id="fileIn" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.dxf,.dwg" hidden></label>
+    <button class="btn od" data-od="draw" style="width:100%;margin-top:6px">☁ 원드라이브에서 열기</button>
     <p class="note" style="margin:6px 0 0">DWG·DXF는 실제 치수(mm)로 축척이 자동으로 잡혀요. DWG는 처음 열 때 변환 엔진(약 11MB)을 받아요.</p>
     <div id="sheetList" style="margin-top:10px"></div>
 
@@ -283,6 +295,7 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
       <button class="btn" id="libAdd">+ 행 추가</button>
       <label class="btn">엑셀/CSV 불러오기<input type="file" id="libFile" accept=".xlsx,.xls,.csv,.json" hidden></label>
       <label class="btn acc">도면·사진·PDF에서 읽기<input type="file" id="schedFile" accept=".pdf,.jpg,.jpeg,.png,.webp,.dxf,.dwg,image/*" multiple hidden></label>
+      <button class="btn od" data-od="lib">☁ 원드라이브에서 읽기</button>
       <button class="btn" id="libPaste">엑셀에서 붙여넣기</button>
       <span class="note">도면 탭의 <b>[일람표 인식]</b>으로 도면 위 일람표 영역만 골라 읽을 수도 있어요</span>
     </div>
@@ -354,6 +367,7 @@ function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 
 /* ---------- 모달 ---------- */
 function modal(title,html,onOk){
+  $('#mOk').textContent='확인';$('#mOk').style.display='';
   $('#mTitle').textContent=title;$('#mBody').innerHTML=html;$('#modal').classList.add('on');
   const f=$('#mBody').querySelector('input,textarea');if(f)setTimeout(()=>f.focus(),30);
   const close=()=>$('#modal').classList.remove('on');
@@ -1138,6 +1152,137 @@ function showReview(res,how){
   const all=$('#rvAll');if(all)all.onchange=()=>$$('#mBody input[type=checkbox][data-i]').forEach(c=>c.checked=all.checked);
 }
 
+
+/* ---------- 원드라이브 직접 연결 (Microsoft Graph, PKCE) ---------- */
+const OD_DEFAULT_CID='';   // 앱 등록 후 받은 클라이언트 ID
+const OD_SCOPES='Files.Read.All User.Read offline_access';
+const OD_AUTH='https://login.microsoftonline.com/common/oauth2/v2.0';
+const OD_EXT=/\.(pdf|dwg|dxf|jpe?g|png|webp)$/i;
+const ls={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch(_){return null}},set:(k,v)=>{try{v==null?localStorage.removeItem(k):localStorage.setItem(k,JSON.stringify(v))}catch(_){}}};
+const odCid=()=>ls.get('od.cid')||OD_DEFAULT_CID;
+const odRedirect=()=>location.origin+location.pathname.replace(/index\.html$/,'');
+const b64u=buf=>btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const rnd=n=>b64u(crypto.getRandomValues(new Uint8Array(n)));
+async function odLogin(intent){
+  if(!odCid()){odSetup(intent);return}
+  if(!(window.crypto&&crypto.subtle)){toast('이 화면에서는 원드라이브 로그인을 쓸 수 없어요 (https 주소의 앱에서 사용)');return}
+  const verifier=rnd(48),state=rnd(16);
+  const challenge=b64u(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier)));
+  ls.set('od.pending',{verifier,state,intent,t:Date.now()});
+  const q=new URLSearchParams({client_id:odCid(),response_type:'code',redirect_uri:odRedirect(),response_mode:'query',scope:OD_SCOPES,code_challenge:challenge,code_challenge_method:'S256',state,prompt:'select_account'});
+  location.href=`${OD_AUTH}/authorize?${q}`;
+}
+async function odTokenReq(params){
+  const r=await fetch(`${OD_AUTH}/token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:odCid(),scope:OD_SCOPES,...params})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||!j.access_token)throw new Error(j.error_description||j.error||('로그인 실패 '+r.status));
+  ls.set('od.tok',{at:j.access_token,rt:j.refresh_token||(ls.get('od.tok')||{}).rt,exp:Date.now()+(j.expires_in||3600)*1000});
+}
+async function odHandleRedirect(){
+  const u=new URL(location.href);const P=u.searchParams;
+  if(!P.has('code')&&!P.has('error'))return false;
+  const pend=ls.get('od.pending');
+  try{history.replaceState(null,'',odRedirect())}catch(_){}
+  if(P.has('error')){modal('원드라이브 로그인 실패',`<p class="note">${esc(P.get('error_description')||P.get('error'))}</p><p class="note">회사(학교) 계정이면 관리자 승인이 필요할 수 있어요.</p>`,()=>{});return true}
+  if(!pend||pend.state!==P.get('state')){toast('로그인 정보가 맞지 않아요. 다시 시도해주세요');return true}
+  try{busy('원드라이브 로그인 중…');await odTokenReq({grant_type:'authorization_code',code:P.get('code'),redirect_uri:odRedirect(),code_verifier:pend.verifier});busy(null);ls.set('od.pending',null);odBrowse(pend.intent||'lib')}
+  catch(e){busy(null);modal('원드라이브 로그인 실패',`<p class="note">${esc(e.message)}</p>`,()=>{})}
+  return true;
+}
+async function odToken(intent){
+  const t=ls.get('od.tok');
+  if(t&&t.at&&t.exp>Date.now()+60000)return t.at;
+  if(t&&t.rt){try{await odTokenReq({grant_type:'refresh_token',refresh_token:t.rt});return ls.get('od.tok').at}catch(_){}}
+  ls.set('od.tok',null);await odLogin(intent);throw new Error('LOGIN');
+}
+async function gget(path,intent){
+  let at=await odToken(intent);
+  const url=path.startsWith('http')?path:'https://graph.microsoft.com/v1.0'+path;
+  let r=await fetch(url,{headers:{Authorization:'Bearer '+at}});
+  if(r.status===401){const t=ls.get('od.tok');if(t){t.exp=0;ls.set('od.tok',t)}at=await odToken(intent);r=await fetch(url,{headers:{Authorization:'Bearer '+at}})}
+  if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.error&&j.error.message)||('원드라이브 오류 '+r.status))}
+  return r.json();
+}
+function odNorm(it){const r=it.remoteItem||it;return {id:r.id,driveId:(r.parentReference||{}).driveId||(it.parentReference||{}).driveId,name:it.name||r.name,folder:!!(r.folder||it.folder),size:r.size||it.size||0,mod:it.lastModifiedDateTime||r.lastModifiedDateTime}}
+async function odList(path,intent){let j=await gget(path,intent),items=[...(j.value||[])];for(let n=0;j['@odata.nextLink']&&n<5;n++){j=await gget(j['@odata.nextLink'],intent);items.push(...(j.value||[]))}return items.map(odNorm)}
+const fmtSize=b=>b>1048576?(b/1048576).toFixed(1)+'MB':b>1024?Math.round(b/1024)+'KB':b+'B';
+let OD={mode:'root',stack:[],sel:new Map(),intent:'lib'};
+function odBrowse(intent){
+  if(!odCid()){odSetup(intent);return}
+  OD.intent=intent;OD.sel=new Map();
+  const last=ls.get('od.last');if(last&&last.stack&&last.stack.length&&OD.mode!=='search'){OD.mode='root';OD.stack=last.stack}
+  $('#modal .box').classList.add('wide');
+  modal('원드라이브에서 '+(intent==='draw'?'도면 열기':'일람표 읽기'),`
+    <div class="odbar"><button class="btn sm" data-m="root">내 파일</button><button class="btn sm" data-m="recent">최근</button><button class="btn sm" data-m="shared">공유받은 파일</button>
+      <input id="odQ" class="btn sm" placeholder="파일 이름 검색" style="flex:1;min-width:120px;text-align:left"><button class="btn sm" id="odGo">검색</button></div>
+    <div class="odpath" id="odPath"></div><div class="odlist" id="odList"><div class="oditem dis">불러오는 중…</div></div>
+    <div class="bar" style="margin:8px 0 0;justify-content:space-between"><span class="note" id="odSelN">파일을 눌러 선택하세요 (PDF·DWG·DXF·사진)</span><span><button class="btn sm" id="odOut">로그아웃</button> <button class="btn sm" id="odSet">설정</button></span></div>
+    <div class="bar" style="margin:6px 0 0"><label class="note"><input type="radio" name="odI" value="lib" ${intent!=='draw'?'checked':''}> 부재 일람표로 읽기</label><label class="note"><input type="radio" name="odI" value="draw" ${intent==='draw'?'checked':''}> 도면으로 열기 (구획용)</label></div>`,
+    ()=>{const ch=[...OD.sel.values()];if(!ch.length){toast('파일을 선택하세요');return false}OD.intent=document.querySelector('input[name=odI]:checked').value;$('#modal .box').classList.remove('wide');odOpen(ch,OD.intent)});
+  $('#mOk').textContent='선택한 파일 열기';
+  $('#mCancel').addEventListener('click',()=>{$('#modal .box').classList.remove('wide');$('#mOk').textContent='확인'},{once:true});
+  $$('.odbar [data-m]').forEach(b=>b.onclick=()=>{OD.mode=b.dataset.m;OD.stack=[];odRender()});
+  $('#odGo').onclick=()=>{const q=$('#odQ').value.trim();if(!q)return;OD.mode='search';OD.q=q;OD.stack=[];odRender()};
+  $('#odQ').onkeydown=e=>{if(e.key==='Enter'){e.stopPropagation();e.preventDefault();$('#odGo').click()}};
+  $('#odOut').onclick=()=>{ls.set('od.tok',null);ls.set('od.last',null);$('#modal').classList.remove('on');$('#modal .box').classList.remove('wide');$('#mOk').textContent='확인';toast('원드라이브에서 로그아웃했어요')};
+  $('#odSet').onclick=()=>{$('#modal .box').classList.remove('wide');$('#mOk').textContent='확인';odSetup(intent)};
+  odRender();
+}
+async function odRender(){
+  $$('.odbar [data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===OD.mode&&!OD.stack.length));
+  const L=$('#odList'),P=$('#odPath');if(!L)return;
+  const top={root:'내 파일',recent:'최근',shared:'공유받은 파일',search:`검색: ${OD.q||''}`}[OD.mode];
+  P.innerHTML=[`<a data-k="-1">${esc(top)}</a>`,...OD.stack.map((f,i)=>`<a data-k="${i}">${esc(f.name)}</a>`)].join(' › ');
+  P.querySelectorAll('a').forEach(a=>a.onclick=()=>{OD.stack=OD.stack.slice(0,+a.dataset.k+1);odRender()});
+  L.innerHTML='<div class="oditem dis">불러오는 중…</div>';
+  let items;
+  try{
+    const cur=OD.stack[OD.stack.length-1];const sel='?$top=200';
+    if(cur)items=await odList(`/drives/${cur.driveId}/items/${cur.id}/children${sel}`,OD.intent);
+    else if(OD.mode==='recent')items=await odList('/me/drive/recent',OD.intent);
+    else if(OD.mode==='shared')items=await odList('/me/drive/sharedWithMe',OD.intent);
+    else if(OD.mode==='search')items=await odList(`/me/drive/root/search(q='${encodeURIComponent(OD.q.replace(/'/g,"''"))}')`,OD.intent);
+    else items=await odList('/me/drive/root/children'+sel,OD.intent);
+  }catch(e){if(e.message==='LOGIN')return;L.innerHTML=`<div class="oditem dis">${esc(e.message)}</div>`;return}
+  if(OD.mode==='root')ls.set('od.last',{stack:OD.stack});
+  items.sort((a,b)=>(b.folder-a.folder)||a.name.localeCompare(b.name,'ko',{numeric:true}));
+  if(!items.length){L.innerHTML='<div class="oditem dis">비어 있어요</div>';return}
+  L.innerHTML=items.map((it,i)=>{const ok=it.folder||OD_EXT.test(it.name);return `<div class="oditem ${ok?'':'dis'} ${OD.sel.has(it.id)?'sel':''}" data-i="${i}"><span>${it.folder?'📁':OD.sel.has(it.id)?'☑':'📄'}</span><span class="nm">${esc(it.name)}</span><span class="sz">${it.folder?'':fmtSize(it.size)}</span></div>`}).join('');
+  L.querySelectorAll('.oditem[data-i]').forEach(d=>d.onclick=()=>{const it=items[+d.dataset.i];
+    if(it.folder){OD.stack.push(it);odRender();return}
+    if(!OD_EXT.test(it.name))return;
+    if(OD.sel.has(it.id))OD.sel.delete(it.id);else OD.sel.set(it.id,it);
+    d.classList.toggle('sel');d.firstElementChild.textContent=OD.sel.has(it.id)?'☑':'📄';
+    $('#odSelN').textContent=OD.sel.size?`${OD.sel.size}개 선택됨`:'파일을 눌러 선택하세요 (PDF·DWG·DXF·사진)'});
+}
+async function odDownload(it,intent){
+  const meta=await gget(`/drives/${it.driveId}/items/${it.id}`,intent);
+  const url=meta['@microsoft.graph.downloadUrl'];
+  let r;
+  if(url)r=await fetch(url);else{const at=await odToken(intent);r=await fetch(`https://graph.microsoft.com/v1.0/drives/${it.driveId}/items/${it.id}/content`,{headers:{Authorization:'Bearer '+at}})}
+  if(!r.ok)throw new Error('내려받기 실패 '+r.status);
+  const total=+r.headers.get('content-length')||it.size||0;
+  if(!r.body||!r.body.getReader){return await r.arrayBuffer()}
+  const rd=r.body.getReader();const parts=[];let got=0;
+  for(;;){const {done,value}=await rd.read();if(done)break;parts.push(value);got+=value.length;busy(`${it.name} 받는 중… ${total?Math.round(got/total*100)+'%':fmtSize(got)}`)}
+  const out=new Uint8Array(got);let o=0;for(const p of parts){out.set(p,o);o+=p.length}return out.buffer;
+}
+async function odOpen(list,intent){
+  const files=[];
+  try{for(const it of list){busy(`${it.name} 받는 중…`);const buf=await odDownload(it,intent);files.push({name:it.name,size:buf.byteLength,arrayBuffer:()=>Promise.resolve(buf.slice(0))})}}
+  catch(e){busy(null);if(e.message!=='LOGIN')toast(errMsg(e));return}
+  busy(null);$('#mOk').textContent='확인';
+  if(intent==='draw'){$$('nav.tabs button').find(b=>b.dataset.tab==='draw').click();handleFiles(files)}
+  else{$$('nav.tabs button').find(b=>b.dataset.tab==='lib').click();readScheduleFiles(files)}
+}
+function odSetup(intent){
+  modal('원드라이브 연결 설정',`<p class="note">원드라이브를 연결하려면 마이크로소프트에 이 앱을 한 번 등록해서 받은 <b>애플리케이션(클라이언트) ID</b>가 필요해요.</p>
+    <div class="field"><label>애플리케이션(클라이언트) ID</label><input id="odCid" placeholder="예: 1a2b3c4d-...." value="${esc(ls.get('od.cid')||OD_DEFAULT_CID)}"></div>
+    <p class="note">등록할 때 <b>리디렉션 URI</b>(단일 페이지 애플리케이션)에 아래 주소를 넣어야 해요:<br><code style="user-select:all;word-break:break-all">${esc(odRedirect())}</code></p>`,
+    b=>{const v=b.querySelector('#odCid').value.trim();if(v&&!/^[0-9a-f-]{36}$/i.test(v)){toast('ID 형식이 맞지 않아요 (36자리)');return false}ls.set('od.cid',v||null);ls.set('od.tok',null);if(v)setTimeout(()=>odBrowse(intent),50)});
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-od]');if(b){e.preventDefault();if(isMobile())closeSheets();odBrowse(b.dataset.od)}});
+
 /* ---------- 다른 앱에서 '공유'로 받은 파일 ---------- */
 async function receiveShared(){
   if(!/[?&]share=1/.test(location.search)||!('caches' in window))return;
@@ -1172,7 +1317,7 @@ $('#dDone').onclick=()=>finishDraft();
   try{if(typeof pdfjsLib!=='undefined'){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}}catch(e){}
   await openDB();
   const st=await idbGet('state');if(st&&st.v===1){S=Object.assign(S,st);S.set=Object.assign({beamDeduct:0,colDeduct:0,loss:0,g1:'floor',g2:'type',g3:'code',filt:{}},S.set)}
-  resize();applyState();setTool('select');receiveShared();
+  resize();applyState();setTool('select');receiveShared();odHandleRedirect();
   $('#saveState').textContent=idb?'이 브라우저에 자동 저장됨':'';
 })();
 window.__S=()=>S;
