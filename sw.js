@@ -1,5 +1,5 @@
 // 타설집계 오프라인 캐시
-const VER = 'pour-v4';
+const VER = 'pour-v5';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 const CDN = [
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
@@ -26,6 +26,21 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const req = e.request;
+  // 다른 앱에서 '공유'로 보낸 파일 받기
+  if (req.method === 'POST' && new URL(req.url).pathname.endsWith('/share')) {
+    e.respondWith((async () => {
+      try {
+        const fd = await req.formData();
+        const files = fd.getAll('file').filter(f => f && typeof f !== 'string');
+        await caches.delete('pour-share');
+        const c = await caches.open('pour-share');
+        let i = 0;
+        for (const f of files) await c.put('./shared/' + (i++), new Response(f, { headers: { 'x-name': encodeURIComponent(f.name || ('file' + i)) } }));
+      } catch (err) {}
+      return Response.redirect('./?share=1', 303);
+    })());
+    return;
+  }
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   // 앱 화면: 네트워크 우선(업데이트 반영), 실패 시 캐시

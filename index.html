@@ -386,10 +386,13 @@ drop.addEventListener('drop',async ev=>handleFiles(await grabFiles(ev.dataTransf
 async function grabFiles(input){
   const list=[...(input.files||[])];const out=[],bad=[];
   busy(list.length?'파일 읽는 중…':null);
-  await Promise.all(list.map(async f=>{try{const buf=await f.arrayBuffer();out.push({name:f.name,size:buf.byteLength,arrayBuffer:()=>Promise.resolve(buf.slice(0)),buf})}catch(e){bad.push(f.name)}}));
+  await Promise.all(list.map(async f=>{let buf=null,err=null;
+    try{buf=await f.arrayBuffer()}catch(e){err=e}
+    if(!buf){try{buf=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsArrayBuffer(f)})}catch(e){err=e}}
+    if(buf)out.push({name:f.name,size:buf.byteLength,arrayBuffer:()=>Promise.resolve(buf.slice(0)),buf});else bad.push(f.name+(err&&err.name?` (${err.name})`:''))}));
   try{input.value=''}catch(_){}
   busy(null);
-  if(bad.length)modal('파일을 읽지 못했어요',`<p class="note"><b>${bad.map(esc).join(', ')}</b><br><br>휴대폰에서 파일 접근이 거부됐어요. 원드라이브·구글드라이브의 <b>온라인 전용 파일</b>이면 흔히 생겨요.<br><br>① 원드라이브(또는 내 파일) 앱에서 그 파일을 <b>휴대폰에 다운로드(오프라인 사용)</b>한 뒤<br>② 다시 선택하면서 <b>"내 파일 → 다운로드"</b> 폴더에서 골라주세요.</p>`,()=>{});
+  if(bad.length)modal('파일을 읽지 못했어요',`<p class="note"><b>${bad.map(esc).join(', ')}</b><br><br>휴대폰이 이 파일을 앱에 넘겨주지 않았어요. 원드라이브·구글드라이브에 있는 파일에서 흔히 생겨요.<br><br><b>방법 1 (추천)</b> 원드라이브 앱에서 파일을 길게 누르기 → <b>공유</b> → <b>타설집계</b> 선택<br><br><b>방법 2</b> 원드라이브 앱에서 파일 ⋮ → <b>다운로드</b> → 여기서 다시 고를 때 <b>내 파일 → 다운로드</b> 폴더에서 선택</p>`,()=>{});
   out.sort((a,b)=>list.findIndex(f=>f.name===a.name)-list.findIndex(f=>f.name===b.name));
   return out;
 }
@@ -1135,6 +1138,20 @@ function showReview(res,how){
   const all=$('#rvAll');if(all)all.onchange=()=>$$('#mBody input[type=checkbox][data-i]').forEach(c=>c.checked=all.checked);
 }
 
+/* ---------- 다른 앱에서 '공유'로 받은 파일 ---------- */
+async function receiveShared(){
+  if(!/[?&]share=1/.test(location.search)||!('caches' in window))return;
+  try{history.replaceState(null,'',location.pathname)}catch(_){}
+  let files=[];
+  try{const c=await caches.open('pour-share');for(const req of await c.keys()){const r=await c.match(req);const buf=await r.arrayBuffer();const name=decodeURIComponent(r.headers.get('x-name')||'shared');files.push({name,size:buf.byteLength,arrayBuffer:()=>Promise.resolve(buf.slice(0))})}await caches.delete('pour-share')}catch(e){toast('공유받은 파일을 읽지 못했어요');return}
+  if(!files.length){toast('공유받은 파일이 없어요');return}
+  modal('공유받은 파일',`<p class="note"><b>${files.map(f=>esc(f.name)).join('<br>')}</b><br><br>어떻게 열까요?</p><div class="bar" style="margin:4px 0 0"><button class="btn acc" id="shSched">부재 일람표로 읽기</button><button class="btn pri" id="shDraw">도면으로 열기 (구획용)</button></div>`,()=>{});
+  $('#mOk').style.display='none';
+  const close=()=>{$('#modal').classList.remove('on');$('#mOk').style.display=''};
+  $('#mCancel').addEventListener('click',()=>{$('#mOk').style.display=''},{once:true});
+  $('#shSched').onclick=()=>{close();$$('nav.tabs button').find(b=>b.dataset.tab==='lib').click();readScheduleFiles(files)};
+  $('#shDraw').onclick=()=>{close();$$('nav.tabs button').find(b=>b.dataset.tab==='draw').click();handleFiles(files)};
+}
 /* ---------- 모바일 ---------- */
 function isMobile(){return window.matchMedia('(max-width:900px)').matches}
 let sheetOpenedAt=0;
@@ -1155,7 +1172,7 @@ $('#dDone').onclick=()=>finishDraft();
   try{if(typeof pdfjsLib!=='undefined'){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}}catch(e){}
   await openDB();
   const st=await idbGet('state');if(st&&st.v===1){S=Object.assign(S,st);S.set=Object.assign({beamDeduct:0,colDeduct:0,loss:0,g1:'floor',g2:'type',g3:'code',filt:{}},S.set)}
-  resize();applyState();setTool('select');
+  resize();applyState();setTool('select');receiveShared();
   $('#saveState').textContent=idb?'이 브라우저에 자동 저장됨':'';
 })();
 window.__S=()=>S;
