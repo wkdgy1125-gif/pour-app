@@ -64,6 +64,7 @@ table.mini input{width:100%;border:1px solid var(--line2);border-radius:4px;padd
 .toolbar button.on{background:var(--ink);color:#fff}
 .toolbar .sep{width:1px;background:var(--line);margin:2px 2px}
 .hint{position:absolute;bottom:10px;left:10px;right:10px;z-index:3;display:flex;justify-content:space-between;pointer-events:none}
+.hint span:empty{display:none}
 .hint span{background:rgba(255,255,255,.92);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;color:var(--ink2)}
 canvas#cv{position:absolute;inset:0;width:100%;height:100%;display:block}
 .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:var(--ink2);z-index:2}
@@ -171,6 +172,15 @@ body{touch-action:manipulation}
   .sheet{padding:10px 8px}
   .modal .box{width:92vw}
 }
+.modal .box.wide{width:820px}
+.rv{max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:8px;margin:8px 0}
+.rv table{width:100%}
+.rv td,.rv th{padding:4px 6px!important}
+.rv input[type=number]{width:70px}
+.rv .src{font:11px var(--mono);color:var(--ink3)}
+.rv tr.dup td{background:#fff8e6}
+details.raw{margin-top:6px;font-size:12px}
+details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;border-radius:6px;white-space:pre-wrap;font:11px var(--mono)}
 </style>
 </head>
 <body>
@@ -193,9 +203,9 @@ body{touch-action:manipulation}
   <aside id="leftPane">
     <div class="sheethead"><b>도면 · 설정</b><button class="btn sm" data-close>닫기</button></div>
     <h3>도면</h3>
-    <label class="drop" id="drop">PDF · JPG · PNG · DXF<br><span class="note">클릭하거나 끌어다 놓기</span>
+    <label class="drop" id="drop">PDF · JPG · PNG · DXF · DWG<br><span class="note">클릭하거나 끌어다 놓기</span>
       <input type="file" id="fileIn" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.dxf,.dwg" hidden></label>
-    <p class="note" style="margin:6px 0 0">DWG는 브라우저에서 직접 읽을 수 없어요. CAD에서 <b>DXF로 저장</b>하거나 PDF로 출력해 올려주세요.</p>
+    <p class="note" style="margin:6px 0 0">DWG·DXF는 실제 치수(mm)로 축척이 자동으로 잡혀요. DWG는 처음 열 때 변환 엔진(약 11MB)을 받아요.</p>
     <div id="sheetList" style="margin-top:10px"></div>
 
     <h3>층 / 층고</h3>
@@ -218,6 +228,8 @@ body{touch-action:manipulation}
       <button data-tool="count" title="개수 (C)">개수</button>
       <div class="sep"></div>
       <button data-tool="scale" title="축척 설정 (S)">축척</button>
+      <div class="sep"></div>
+      <button data-tool="ocr" title="도면의 일람표 영역을 드래그해서 읽기">일람표 인식</button>
       <button id="fitBtn" title="화면 맞춤 (F)">맞춤</button>
     </div>
     <canvas id="cv"></canvas>
@@ -270,8 +282,9 @@ body{touch-action:manipulation}
     <div class="bar">
       <button class="btn" id="libAdd">+ 행 추가</button>
       <label class="btn">엑셀/CSV 불러오기<input type="file" id="libFile" accept=".xlsx,.xls,.csv,.json" hidden></label>
+      <label class="btn acc">도면·사진·PDF에서 읽기<input type="file" id="schedFile" accept=".pdf,.jpg,.jpeg,.png,.webp,.dxf,.dwg,image/*" multiple hidden></label>
       <button class="btn" id="libPaste">엑셀에서 붙여넣기</button>
-      <span class="note">열 순서: 부호 · 부재종류 · B · H · T · 비고 (머리글 이름으로도 인식)</span>
+      <span class="note">도면 탭의 <b>[일람표 인식]</b>으로 도면 위 일람표 영역만 골라 읽을 수도 있어요</span>
     </div>
     <div class="tw"><table class="grid" id="libTbl"></table></div>
   </div>
@@ -327,13 +340,14 @@ let S={
   cur:{code:'S1',floor:'1F',zone:''}, activeSheet:null
 };
 const FILES={};      // fileId -> {name, kind, data:ArrayBuffer}
-const BG={};         // sheetId -> canvas/image
+const BG={};const DXFTXT={};         // sheetId -> canvas/image
 let view={x:0,y:0,z:1};
 let tool='select', draft=null, selId=null, drag=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const uid=()=>Math.random().toString(36).slice(2,10);
 const r3=n=>Math.round(n*1000)/1000;
 const fmt=(n,d=3)=>(isFinite(n)?n:0).toLocaleString('ko-KR',{minimumFractionDigits:d,maximumFractionDigits:d});
+function busy(m){const t=$('#toast');clearTimeout(t._t);if(m){t.textContent=m;t.classList.add('on')}else t.classList.remove('on')}
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('on'),2200)}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 
@@ -374,9 +388,8 @@ $('#stage').addEventListener('drop',e=>{e.preventDefault();handleFiles([...e.dat
 async function handleFiles(list){
   for(const f of list){
     const ext=f.name.split('.').pop().toLowerCase();
-    if(ext==='dwg'){modal('DWG 파일','<p class="note">DWG는 암호화된 바이너리 형식이라 브라우저에서 직접 열 수 없어요.<br><br>CAD에서 <b>다른 이름으로 저장 → DXF</b>로 저장하거나 <b>PDF로 출력</b>해서 올려주세요. DXF는 실제 치수(mm)로 바로 축척이 잡힙니다.</p>',()=>{});continue}
     const data=await f.arrayBuffer(); const fid=uid();
-    const kind=ext==='pdf'?'pdf':ext==='dxf'?'dxf':'img';
+    const kind=ext==='pdf'?'pdf':ext==='dxf'?'dxf':ext==='dwg'?'dwg':'img';
     FILES[fid]={name:f.name,kind,data}; await idbPut('file:'+fid,FILES[fid]);
     try{
       if(kind==='pdf'){
@@ -410,11 +423,11 @@ async function loadBG(sh){
     if(sh.pdfScale==null){sh.pdfScale=sc}
     BG[sh.id]=c; return c;
   }
-  if(F.kind==='dxf'){
-    const txt=new TextDecoder(guessEnc(F.data)).decode(F.data);
-    const r=renderDXF(txt); if(!r)throw new Error('DXF에서 도형을 찾지 못했어요');
+  if(F.kind==='dxf'||F.kind==='dwg'){
+    const r=F.kind==='dwg'?await renderDWG(F.data):renderDXF(new TextDecoder(guessEnc(F.data)).decode(F.data));
+    if(!r)throw new Error('도면에서 도형을 찾지 못했어요');
     if(!sh.scale){sh.scale=r.mmPerPx;save()}
-    BG[sh.id]=r.canvas; return r.canvas;
+    DXFTXT[sh.id]=r.texts;BG[sh.id]=r.canvas; return r.canvas;
   }
 }
 function guessEnc(buf){const head=new TextDecoder('latin1').decode(buf.slice(0,4000));const m=head.match(/\$DWGCODEPAGE\s*\r?\n\s*3\s*\r?\n\s*(\S+)/);if(m&&/949|ANSI_949|KSC/i.test(m[1]))return 'euc-kr';return 'utf-8'}
@@ -460,8 +473,10 @@ function flatten(ents,blocks,tf,out,depth){
   }
 }
 function renderDXF(txt){
-  const {ents,blocks}=parseDXF(txt);const out=[];flatten(ents,blocks,[1,0,0,1,0,0],out,0);
-  const xs=[],ys=[];for(const o of out){if(o.k==='l')o.p.forEach(p=>{xs.push(p[0]);ys.push(p[1])});else if(o.k==='c'){xs.push(o.c[0]-o.r,o.c[0]+o.r);ys.push(o.c[1]-o.r,o.c[1]+o.r)}else{xs.push(o.p[0]);ys.push(o.p[1])}}
+  const {ents,blocks}=parseDXF(txt);const out=[];flatten(ents,blocks,[1,0,0,1,0,0],out,0);return renderOut(out);
+}
+function renderOut(out){
+  const xs=[],ys=[];for(const o of out){if(o.k==='l')o.p.forEach(p=>{xs.push(p[0]);ys.push(p[1])});else if(o.k==='c'){xs.push(o.c[0]-o.r,o.c[0]+o.r);ys.push(o.c[1]-o.r,o.c[1]+o.r)}else{xs.push(o.p[0],o.p[0]+o.s.length*o.h*0.75);ys.push(o.p[1],o.p[1]+o.h)}}
   const ok=v=>isFinite(v);const X=xs.filter(ok).sort((a,b)=>a-b),Y=ys.filter(ok).sort((a,b)=>a-b);if(!X.length)return null;
   const q=(A,f)=>A[Math.min(A.length-1,Math.max(0,Math.floor(A.length*f)))];
   let x0=q(X,.002),x1=q(X,.998),y0=q(Y,.002),y1=q(Y,.998);const pad=Math.max(x1-x0,y1-y0)*.02;x0-=pad;x1+=pad;y0-=pad;y1+=pad;
@@ -470,8 +485,56 @@ function renderDXF(txt){
   const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#222';g.fillStyle='#222';g.lineWidth=Math.max(1.5,Math.max(c.width,c.height)/1600);
   const T=p=>[(p[0]-x0)*k,(y1-p[1])*k];
   g.beginPath();for(const o of out){if(o.k==='l'){const a=T(o.p[0]);g.moveTo(a[0],a[1]);for(let j=1;j<o.p.length;j++){const b=T(o.p[j]);g.lineTo(b[0],b[1])}}else if(o.k==='c'){const a=T(o.c);g.moveTo(a[0]+o.r*k*Math.cos(-o.a0),a[1]+o.r*k*Math.sin(-o.a0));g.arc(a[0],a[1],o.r*k,-o.a0,-o.a1,true)}}g.stroke();
-  for(const o of out){if(o.k!=='t')continue;const a=T(o.p);const h=o.h*k;if(h<2)continue;g.save();g.translate(a[0],a[1]);g.rotate(-o.rot);g.font=`${h}px sans-serif`;g.fillText(o.s,0,0);g.restore()}
-  return {canvas:c,mmPerPx:1/k};
+  const texts=[];for(const o of out){if(o.k!=='t')continue;const a=T(o.p);const h=o.h*k;if(Math.abs(Math.sin(o.rot))<0.2){g.font=`${Math.max(h,1)}px sans-serif`;texts.push({s:o.s,x:a[0],y:a[1]-h,w:g.measureText(o.s).width,h})}if(h<2)continue;g.save();g.translate(a[0],a[1]);g.rotate(-o.rot);g.font=`${h}px sans-serif`;g.fillText(o.s,0,0);g.restore()}
+  return {canvas:c,mmPerPx:1/k,texts};
+}
+
+
+/* ---------- DWG (LibreDWG WebAssembly) ---------- */
+const DWG_VER='0.8.6',DWG_BASE=`https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@${DWG_VER}/`;
+let DWGLIB=null;
+async function getDWG(){
+  if(DWGLIB)return DWGLIB;
+  busy('DWG 변환 엔진 준비 중… (처음 한 번만 약 11MB 받아요)');
+  let lastErr=null;
+  for(const [url,arg] of [[DWG_BASE+'dist/libredwg-web.js',undefined],[DWG_BASE+'dist/libredwg-web.js',DWG_BASE+'wasm/'],[DWG_BASE+'+esm',DWG_BASE+'wasm/']]){
+    try{const m=await import(url);const L=m.LibreDwg||(m.default&&m.default.LibreDwg);if(!L)throw new Error('LibreDwg 없음');
+      const lib=arg===undefined?await L.create():await L.create(arg);DWGLIB={lib,T:m.Dwg_File_Type||{DWG:0}};return DWGLIB}
+    catch(e){lastErr=e}
+  }
+  throw new Error('DWG 변환 엔진을 불러오지 못했어요. 인터넷 연결을 확인하거나, 설치한 앱/HTML 파일에서 열어주세요'+(lastErr?` (${lastErr.message})`:''));
+}
+const P2=p=>p?[+p.x||0,+p.y||0]:[0,0];
+const ANG=a=>{a=+a||0;return Math.abs(a)>Math.PI*2+0.01?a*Math.PI/180:a};
+function dwgFlatten(ents,blocks,tf,out,depth){
+  const ap=(x,y)=>[tf[0]*x+tf[2]*y+tf[4],tf[1]*x+tf[3]*y+tf[5]];const apP=p=>{const q=P2(p);return ap(q[0],q[1])};
+  const sc=Math.hypot(tf[0],tf[1]);const trot=Math.atan2(tf[1],tf[0]);const mir=(tf[0]*tf[3]-tf[1]*tf[2])<0;
+  for(const e of ents||[]){
+    if(!e||e.isVisible===false)continue;
+    try{switch(e.type){
+      case 'LINE':out.push({k:'l',p:[apP(e.startPoint),apP(e.endPoint)]});break;
+      case 'LWPOLYLINE':case 'POLYLINE2D':case 'POLYLINE3D':{const v=(e.vertices||[]).map(q=>apP(q.point||q));if((+e.flag||0)&1&&v.length)v.push(v[0]);if(v.length>1)out.push({k:'l',p:v});break}
+      case 'CIRCLE':out.push({k:'c',c:apP(e.center),r:(+e.radius||0)*sc,a0:0,a1:Math.PI*2});break;
+      case 'ARC':{let a0=ANG(e.startAngle),a1=ANG(e.endAngle);if(mir){[a0,a1]=[Math.PI-a1,Math.PI-a0]}out.push({k:'c',c:apP(e.center),r:(+e.radius||0)*sc,a0:a0+trot,a1:a1+trot});break}
+      case 'TEXT':case 'ATTRIB':case 'ATTDEF':{const t=String(e.text||'');if(t)out.push({k:'t',p:apP(e.startPoint||e.insertionPoint),h:(+e.textHeight||2.5)*sc,s:t,rot:ANG(e.rotation)+trot});break}
+      case 'MTEXT':{const t=String(e.text||'').replace(/\\P/g,' ').replace(/\\[A-Za-z][^;]*;/g,'').replace(/[{}]/g,'');let rot=ANG(e.rotation);if(e.direction&&(e.direction.x||e.direction.y))rot=Math.atan2(e.direction.y,e.direction.x);if(t)out.push({k:'t',p:apP(e.insertionPoint),h:(+e.textHeight||2.5)*sc,s:t,rot:rot+trot});break}
+      case 'INSERT':{if(depth>5)break;const b=blocks.get(e.name);if(!b)break;const sx=+(e.xScale??1)||1,sy=+(e.yScale??1)||1,rot=ANG(e.rotation);const ip=P2(e.insertionPoint),bp=P2(b.basePoint);
+        const cs=Math.cos(rot),sn=Math.sin(rot);const m=[cs*sx,sn*sx,-sn*sy,cs*sy,0,0];m[4]=ip[0]-(m[0]*bp[0]+m[2]*bp[1]);m[5]=ip[1]-(m[1]*bp[0]+m[3]*bp[1]);
+        const nt=[tf[0]*m[0]+tf[2]*m[1],tf[1]*m[0]+tf[3]*m[1],tf[0]*m[2]+tf[2]*m[3],tf[1]*m[2]+tf[3]*m[3],tf[0]*m[4]+tf[2]*m[5]+tf[4],tf[1]*m[4]+tf[3]*m[5]+tf[5]];
+        dwgFlatten(b.entities,blocks,nt,out,depth+1);if(Array.isArray(e.attribs))dwgFlatten(e.attribs,blocks,tf,out,depth+1);break}
+    }}catch(_){}
+  }
+}
+async function renderDWG(buf){
+  const {lib,T}=await getDWG();busy('DWG 읽는 중…');
+  let ptr=null,db=null;
+  try{ptr=lib.dwg_read_data(buf instanceof ArrayBuffer?buf.slice(0):buf,T.DWG??0);if(ptr==null)throw new Error('파일을 읽지 못했어요');db=lib.convert(ptr)}
+  catch(e){busy(null);throw new Error('DWG를 읽지 못했어요: '+(e.message||e)+' — 이 파일은 DXF로 저장해 올려주세요')}
+  finally{try{if(ptr!=null)lib.dwg_free(ptr)}catch(_){}}
+  const blocks=new Map();for(const b of (db.tables&&db.tables.BLOCK_RECORD&&db.tables.BLOCK_RECORD.entries)||[])if(b&&b.name)blocks.set(b.name,b);
+  let ents=db.entities||[];const model=ents.filter(e=>!e.isInPaperSpace);if(model.length)ents=model;
+  const out=[];dwgFlatten(ents,blocks,[1,0,0,1,0,0],out,0);busy(null);
+  return renderOut(out);
 }
 
 /* ---------- 도면 목록 ---------- */
@@ -580,7 +643,7 @@ function draw(){
       ctx.fillStyle='rgba(255,255,255,.9)';ctx.fillRect(cp[0]-w/2-4/view.z,cp[1]-fs*.8-3/view.z,w+8/view.z,fs*1.2+4/view.z);ctx.fillStyle=c.warn?'#b45309':(on?'#1d4ed8':col);ctx.textAlign='center';ctx.fillText(txt,cp[0],cp[1]+fs*.15);ctx.textAlign='start'}
   }
   if(draft){
-    ctx.strokeStyle='#c2410c';ctx.fillStyle='rgba(194,65,12,.12)';ctx.lineWidth=lw;ctx.setLineDash([6/view.z,4/view.z]);
+    ctx.strokeStyle=draft.ocr?'#1d4ed8':'#c2410c';ctx.fillStyle=draft.ocr?'rgba(29,78,216,.10)':'rgba(194,65,12,.12)';ctx.lineWidth=lw;ctx.setLineDash([6/view.z,4/view.z]);
     const pts=draft.hover?[...draft.pts,draft.hover]:draft.pts;
     if(draft.kind==='count'){ctx.setLineDash([]);for(const p of draft.pts){ctx.beginPath();ctx.arc(p[0],p[1],7/view.z,0,Math.PI*2);ctx.fillStyle='#c2410c';ctx.fill()}}
     else if(pts.length){ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));if(draft.kind==='poly'||draft.kind==='rect'){ctx.closePath();ctx.fill()}ctx.stroke()}
@@ -591,9 +654,9 @@ function centroid(p){let x=0,y=0;p.forEach(q=>{x+=q[0];y+=q[1]});return [x/p.len
 function midOf(p){if(p.length<2)return p[0];const tot=polyLen(p);let acc=0;for(let i=1;i<p.length;i++){const d=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);if(acc+d>=tot/2){const t=(tot/2-acc)/d;return [p[i-1][0]+(p[i][0]-p[i-1][0])*t,p[i-1][1]+(p[i][1]-p[i-1][1])*t]}acc+=d}return p[0]}
 
 /* ---------- 도구 ---------- */
-const HINT={select:'구획 클릭: 선택 · 꼭짓점 드래그: 수정 · Delete: 삭제 · 빈 곳 드래그: 화면 이동',rect:'드래그해서 사각 면적 구획',poly:'클릭으로 꼭짓점 추가 · 더블클릭/Enter: 완료 · Esc: 취소',line:'클릭으로 점 추가 · 더블클릭/Enter: 완료 (연속선 가능)',count:'부재 위치를 클릭해서 개수 세기 · Enter: 묶음 완료',scale:'도면에서 치수를 아는 두 점을 클릭하세요'};
+const HINT={select:'구획 클릭: 선택 · 꼭짓점 드래그: 수정 · Delete: 삭제 · 빈 곳 드래그: 화면 이동',rect:'드래그해서 사각 면적 구획',poly:'클릭으로 꼭짓점 추가 · 더블클릭/Enter: 완료 · Esc: 취소',line:'클릭으로 점 추가 · 더블클릭/Enter: 완료 (연속선 가능)',count:'부재 위치를 클릭해서 개수 세기 · Enter: 묶음 완료',scale:'도면에서 치수를 아는 두 점을 클릭하세요',ocr:'도면의 일람표 부분을 드래그해서 감싸면 부호·치수를 읽어요'};
 function setTool(t){finishDraft();tool=t;$$('#toolbar [data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));setHint(hintFor(t));cv.style.cursor=t==='select'?'default':'crosshair'}
-const HINT_T={select:'구획 탭: 선택 · 두 손가락: 확대/이동 · 꼭짓점 끌기: 수정',rect:'손가락으로 끌어서 사각 구획 · 두 손가락: 확대/이동',poly:'꼭짓점을 차례로 탭 → [완료]',line:'시작점·끝점(꺾이는 점)을 탭 → [완료]',count:'부재 위치를 탭해서 개수 세기 → [완료]',scale:'치수를 아는 두 점을 탭하세요'};
+const HINT_T={select:'구획 탭: 선택 · 두 손가락: 확대/이동 · 꼭짓점 끌기: 수정',rect:'손가락으로 끌어서 사각 구획 · 두 손가락: 확대/이동',poly:'꼭짓점을 차례로 탭 → [완료]',line:'시작점·끝점(꺾이는 점)을 탭 → [완료]',count:'부재 위치를 탭해서 개수 세기 → [완료]',scale:'치수를 아는 두 점을 탭하세요',ocr:'일람표 부분을 손가락으로 끌어 감싸세요'};
 function hintFor(t){return (isMobile()||isTouch?HINT_T:HINT)[t]}
 function setHint(h){$('#hintL').textContent=h}
 $$('#toolbar [data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
@@ -612,7 +675,7 @@ function onDown(e){
     const hit=hitTest(w);selId=hit?hit.id:null;renderSel();renderShapeList();draw();
     if(hit&&isMobile()){openSheet('right');const rp=$('#rightPane');rp.scrollTop=Math.max(0,$('#selPanel').offsetTop-50)}
     if(hit&&!isTouch){drag={m:'move',s:hit,last:w,moved:false}}else drag={m:'pan',sx:sp[0],sy:sp[1],vx:view.x,vy:view.y};return}
-  if(tool==='rect'){draft={kind:'rect',pts:[w],hover:null};drag={m:'rect',a:w};return}
+  if(tool==='rect'||tool==='ocr'){draft={kind:'rect',pts:[w],hover:null,ocr:tool==='ocr'};drag={m:'rect',a:w};return}
   if(tool==='scale'){if(!draft)draft={kind:'line',pts:[],scale:true};draft.pts.push(w);if(draft.pts.length===2){const px=polyLen(draft.pts);draft=null;draw();
       modal('축척 설정',`<div class="field"><label>두 점 사이 실제 거리 (mm)</label><input type="number" inputmode="decimal" id="mDist" placeholder="예: 8400"></div><p class="note">도면 픽셀 거리 ${fmt(px,1)}px</p>`,b=>{const v=+b.querySelector('#mDist').value;if(!v)return false;sh.scale=v/px;renderSheets();refreshDraw();save();toast(`축척 설정: 1px = ${fmt(sh.scale,2)}mm`);setTool('select')})}draw();return}
   if(tool==='poly'||tool==='line'){if(!draft)draft={kind:tool,pts:[]};const p=snap(w,e);const lp=draft.pts[draft.pts.length-1];if(!lp||Math.hypot(lp[0]-p[0],lp[1]-p[1])>1/view.z)draft.pts.push(p);liveMeasure();draw();return}
@@ -654,7 +717,7 @@ function onUp(e){
   if(ptrs.size===0&&multi){multi=false;return}
   if(tap){const t=tap;tap=null;onDown({clientX:t.x,clientY:t.y,button:0,shiftKey:false});return}
   if(!drag)return;const d=drag;drag=null;
-  if(d.m==='rect'){if(draft&&draft.pts.length===4&&polyArea(draft.pts)*view.z*view.z>30){draft.kind='poly';finishDraft()}else{draft=null;draw()}}
+  if(d.m==='rect'){if(draft&&draft.pts.length===4&&polyArea(draft.pts)*view.z*view.z>30){if(draft.ocr){const P=draft.pts;draft=null;draw();readRegion(curSheet(),Math.min(P[0][0],P[2][0]),Math.min(P[0][1],P[2][1]),Math.max(P[0][0],P[2][0]),Math.max(P[0][1],P[2][1]))}else{draft.kind='poly';finishDraft()}}else{draft=null;draw()}}
   if(d.m==='vert'||(d.m==='move'&&d.moved)){refreshDraw();save()}
 }
 window.addEventListener('pointerup',onUp);window.addEventListener('pointercancel',onUp);
@@ -731,7 +794,7 @@ function renderLib(){
   $$('#libTbl [data-ld]').forEach(b=>b.onclick=()=>{const l=S.lib[+b.dataset.ld];if(used[l.code]){toast(`'${l.code}'는 구획 ${used[l.code]}개에서 사용 중이에요`);return}S.lib.splice(+b.dataset.ld,1);renderLib();renderCur();save()});
 }
 $('#libAdd').onclick=()=>{let n=1;while(S.lib.some(l=>l.code==='NEW'+n))n++;S.lib.push({code:'NEW'+n,type:'기타',B:0,H:0,T:0,note:''});renderLib();renderCur();save()};
-function typeOf(s){s=String(s||'');if(/기초|footing|mat|매트|^F/i.test(s))return '기초';if(/기둥|col|^C/i.test(s))return '기둥';if(/보|beam|girder|^G|^B/i.test(s))return '보';if(/슬래브|slab|^S/i.test(s))return '슬래브';if(/벽|wall|^W/i.test(s))return '벽체';if(/계단|stair/i.test(s))return '계단';return TYPES.includes(s)?s:'기타'}
+function typeOf(s){s=String(s||'').trim();if(TYPES.includes(s))return s;if(/기초|footing|매트/i.test(s))return '기초';if(/기둥|column/i.test(s))return '기둥';if(/보|beam|girder/i.test(s))return '보';if(/슬래브|slab/i.test(s))return '슬래브';if(/벽|wall/i.test(s))return '벽체';if(/계단|stair/i.test(s))return '계단';return codeType(s)}
 function importRows(rows){
   rows=rows.filter(r=>r&&r.some(c=>String(c??'').trim()));if(!rows.length)return 0;
   let hi=-1,map={code:0,type:1,B:2,H:3,T:4,note:5};
@@ -866,6 +929,200 @@ function applyState(){
   if(S.activeSheet&&curSheet())selectSheet(S.activeSheet);else if(S.sheets[0])selectSheet(S.sheets[0].id);else{refreshDraw()}
 }
 
+
+/* ---------- 일람표 인식: 글자 → 부재 ---------- */
+// 토큰: {s, x, y, w, h}  (x,y = 왼쪽 위, 화면/이미지 좌표)
+function codeType(code){
+  const core=String(code).toUpperCase().replace(/^\d+/,'');const L=(core.match(/^[A-Z]+/)||[''])[0];
+  if(!L)return '기타';
+  if(/^(F|MF|MAT|PF|WF|IF|CF)/.test(L))return '기초';
+  if(L.includes('G')||/B$/.test(L))return '보';
+  if(/^(C|SC|RC|PC)$/.test(L)||/^C/.test(L))return '기둥';
+  if(/^(S|FS|DS|RS)/.test(L))return '슬래브';
+  if(/^(W|RW|CW|SW|EW|BW)/.test(L))return '벽체';
+  if(/^(ST|STR)/.test(L))return '계단';
+  return '기타';
+}
+const NOT_CODE=/^(THK|EL|FL|SL|GL|HD|SD|SHD|UHD|D|H|MPA|KN|KPA|MM|CM|M|NO|DWG|SCALE|REV|SH|AT|TYP|PL|L|N|E|X|Y|HL|RL|DL|LL|HT|OF)$/;
+function normLineText(s){
+  return s.toUpperCase()
+    .replace(/[×＊✕✖*]/g,'X').replace(/(\d)\s*[xX]\s*(?=\d)/g,'$1X')
+    .replace(/[，]/g,',').replace(/(\d),(?=\d{3}(?!\d))/g,'$1').replace(/＝/g,'=').replace(/[（]/g,'(').replace(/[）]/g,')');
+}
+function fixOCR(s){ // 흔한 OCR 오인식 보정
+  s=s.replace(/\$(?=\d)/g,'S').replace(/^(\d{3,4})(\1)$/,'$1x$2').replace(/^(\d{3,4})(\d{3,4})$/,(m,a,b)=>a.length===b.length&&+a%50===0&&+b%50===0&&+a>=150&&+b>=150?a+'x'+b:m);
+  return s.replace(/(?<=\d)[Oo](?=\d|\b)/g,'0').replace(/(?<=[A-Za-z])[lI|](?=\d|\b)/g,'1').replace(/(?<=\d)[lI|]/g,'1');
+}
+function buildLines(tokens){
+  const T=tokens.filter(t=>t&&String(t.s).trim()).map(t=>({...t,s:String(t.s),yc:t.y+t.h/2}));
+  T.sort((a,b)=>a.yc-b.yc);
+  const lines=[];
+  for(const t of T){
+    let ln=lines.find(l=>Math.abs(l.yc-t.yc)<Math.max(l.h,t.h)*0.55 && t.x>-1);
+    if(!ln){ln={yc:t.yc,h:t.h,toks:[]};lines.push(ln)}
+    ln.toks.push(t);ln.yc=(ln.yc*(ln.toks.length-1)+t.yc)/ln.toks.length;ln.h=Math.max(ln.h,t.h);
+  }
+  for(const ln of lines){
+    ln.toks.sort((a,b)=>a.x-b.x);
+    let text='',xs=[];
+    ln.toks.forEach((t,i)=>{
+      if(i){const p=ln.toks[i-1];const gap=t.x-(p.x+p.w);const sep=gap>ln.h*2.2?' | ':' ';const gx=p.x+p.w+Math.max(0,gap)/2;for(const ch of sep){text+=ch;xs.push(gx)}}
+      const s=fixOCR(t.s);const n=s.length||1;
+      for(let k=0;k<s.length;k++){text+=s[k];xs.push(t.x+t.w*(k+0.5)/n)}
+    });
+    ln.text=normLineText(text);ln.xs=xs;
+  }
+  return lines;
+}
+function scanItems(lines){
+  const items=[];
+  const at=(ln,i,j)=>(ln.xs[i]+ln.xs[Math.max(i,j-1)])/2;
+  for(const ln of lines){
+    const tx=ln.text;let m;
+    const reDim=/(\d{3,5})X(\d{3,5})(?:X(\d{2,5}))?/g;
+    while((m=reDim.exec(tx))){items.push({k:'dim',v:[+m[1],+m[2],m[3]?+m[3]:0],x:at(ln,m.index,m.index+m[0].length),y:ln.yc,h:ln.h,src:m[0]})}
+    const reThk=/(?:THK|T|D|두께|H)\s*[=.:]?\s*(\d{2,4})(?!\d|X)|(\d{2,4})\s*(?:THK|T)(?![A-Z])/g;
+    while((m=reThk.exec(tx))){const v=+(m[1]||m[2]);if(v>=50&&v<=5000)items.push({k:'thk',v,x:at(ln,m.index,m.index+m[0].length),y:ln.yc,h:ln.h,src:m[0]})}
+    const reCode=/(?<![A-Z0-9])(\d{0,2}[A-Z]{1,3}\d{1,3}[A-Z]?)(?![A-Z0-9])/g;
+    while((m=reCode.exec(tx))){
+      const c=m[1];const L=(c.replace(/^\d+/,'').match(/^[A-Z]+/)||[''])[0];
+      if(NOT_CODE.test(L))continue;
+      const after=tx.slice(m.index+c.length).trimStart();if(/^=/.test(after))continue; // T=200 같은 것
+      if(/^\d+$/.test(c))continue;
+      items.push({k:'code',v:c,x:at(ln,m.index,m.index+c.length),y:ln.yc,h:ln.h,src:c});
+    }
+  }
+  return items;
+}
+function pairCost(c,d){
+  const h=Math.max(c.h,d.h)||10;const dx=d.x-c.x,dy=d.y-c.y;
+  if(Math.abs(dy)<h*0.6){return dx>=0?dx:(-dx*3+h*4)}       // 같은 줄: 오른쪽 우선
+  if(dy>0)return Math.abs(dx)*1.4+dy;                        // 아래 (표의 다음 행)
+  return Math.abs(dx)*1.4-dy*4+h*6;                          // 위쪽은 불리
+}
+function assign(codes,cands,maxF){
+  const pairs=[];
+  codes.forEach((c,i)=>cands.forEach((d,j)=>{const cost=pairCost(c,d);if(cost<(Math.max(c.h,d.h)||10)*maxF)pairs.push([cost,i,j])}));
+  pairs.sort((a,b)=>a[0]-b[0]);
+  const res=new Array(codes.length).fill(null),used=new Set();
+  for(const [cost,i,j] of pairs){if(res[i]||used.has(j))continue;res[i]=cands[j];used.add(j)}
+  for(const [cost,i,j] of pairs){if(!res[i]){res[i]=cands[j];res.shared=res.shared||new Set();res.shared.add(i)}} // 공유 치수 허용 (G1,G2 400X700)
+  return res;
+}
+function parseSchedule(tokens){
+  const lines=buildLines(tokens);const items=scanItems(lines);
+  const codes=items.filter(i=>i.k==='code'),dims=items.filter(i=>i.k==='dim'),thks=items.filter(i=>i.k==='thk');
+  const dA=assign(codes,dims,14),tA=assign(codes,thks,14);
+  const out=new Map();
+  codes.forEach((c,i)=>{
+    const type=codeType(c.v);const d=dA[i],t=tA[i];
+    const r={code:c.v,type,B:0,H:0,T:0,src:[],shared:false};
+    if(d&&type!=='슬래브'){if(dA.shared&&dA.shared.has(i))r.shared=true;r.B=d.v[0];r.H=d.v[1];if(d.v[2])r.T=d.v[2];r.src.push(d.src)}
+    if(t&&!r.T&&(type==='슬래브'||type==='벽체'||type==='기초'||type==='계단'||!d)){if(tA.shared&&tA.shared.has(i))r.shared=true;r.T=t.v;r.src.push(t.src)}
+    if(type==='슬래브'||type==='벽체'){if(!r.T&&d&&!t){/* 슬래브에 BxH가 붙은 경우는 무시 */}r.B=type==='벽체'?0:r.B;if(type==='슬래브'){r.B=0;r.H=0}}
+    const has=r.B||r.H||r.T;
+    const prev=out.get(r.code);
+    if(!prev||(!(prev.B||prev.H||prev.T)&&has))out.set(r.code,r);
+  });
+  return {rows:[...out.values()].sort((a,b)=>String(a.code).localeCompare(b.code,'ko',{numeric:true})),lines};
+}
+
+/* ---------- 글자 가져오기 (PDF 글자 / DXF 글자 / 사진 OCR) ---------- */
+async function pdfTokens(F,pageNo,scale){
+  const doc=await pdfjsLib.getDocument({data:F.data.slice(0)}).promise;const pg=await doc.getPage(pageNo);
+  const vp=pg.getViewport({scale});const tc=await pg.getTextContent();
+  return tc.items.filter(it=>it.str&&it.str.trim()).map(it=>{const t=pdfjsLib.Util.transform(vp.transform,it.transform);const h=Math.hypot(t[2],t[3])||10;return {s:it.str,x:t[4],y:t[5]-h,w:(it.width||it.str.length*h*0.5)*scale,h}});
+}
+function prepForOCR(src,sx,sy,sw,sh){
+  // 글자 높이를 키우고 표 선을 지워서 인식률을 높임
+  const f=Math.max(1,Math.min(3,2400/Math.max(sw,sh)));const W=Math.round(sw*f),H=Math.round(sh*f);
+  const c=document.createElement('canvas');c.width=W;c.height=H;const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.imageSmoothingQuality='high';g.drawImage(src,sx,sy,sw,sh,0,0,W,H);
+  const im=g.getImageData(0,0,W,H),d=im.data;const dark=new Uint8Array(W*H);
+  for(let i=0;i<W*H;i++){const v=d[i*4]*.3+d[i*4+1]*.59+d[i*4+2]*.11;dark[i]=v<160?1:0}
+  const minH=Math.max(40,W*0.06),minV=Math.max(40,H*0.06);const kill=new Uint8Array(W*H);
+  for(let y=0;y<H;y++){let x=0;while(x<W){if(dark[y*W+x]){const s0=x;while(x<W&&dark[y*W+x])x++;if(x-s0>=minH)for(let k=s0;k<x;k++)kill[y*W+k]=1}else x++}}
+  for(let x=0;x<W;x++){let y=0;while(y<H){if(dark[y*W+x]){const s0=y;while(y<H&&dark[y*W+x])y++;if(y-s0>=minV)for(let k=s0;k<y;k++)kill[k*W+x]=1}else y++}}
+  for(let i=0;i<W*H;i++){const v=kill[i]?255:(dark[i]?0:255);d[i*4]=d[i*4+1]=d[i*4+2]=v;d[i*4+3]=255}
+  g.putImageData(im,0,0);return c;
+}
+let OCRW=null;
+async function getOCR(){
+  if(OCRW)return OCRW;
+  if(typeof Tesseract==='undefined'){await new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';sc.onload=res;sc.onerror=()=>rej(new Error('글자인식 엔진을 불러오지 못했어요. 인터넷 연결을 확인하세요'));document.head.appendChild(sc)})}
+  busy('글자인식 엔진 준비 중… (처음 한 번만 몇 MB 받아요)');
+  try{OCRW=await Tesseract.createWorker('eng',1,{logger:m=>{if(m.status==='recognizing text')busy(`글자 인식 중 ${Math.round(m.progress*100)}%`)}});await OCRW.setParameters({tessedit_pageseg_mode:'11'})}
+  catch(e){OCRW=null;throw new Error('이 화면에서는 사진 글자인식을 쓸 수 없어요. 설치한 앱이나 HTML 파일에서 사용해주세요')}
+  return OCRW;
+}
+async function ocrTokens(canvas){
+  const w=await getOCR();const {data}=await w.recognize(canvas);
+  return (data.words||[]).filter(x=>x.confidence>20).map(x=>({s:x.text,x:x.bbox.x0,y:x.bbox.y0,w:x.bbox.x1-x.bbox.x0,h:x.bbox.y1-x.bbox.y0}));
+}
+async function readRegion(sh,x0,y0,x1,y1){
+  if(!sh)return;const bg=BG[sh.id];if(!bg){toast('도면이 아직 열리지 않았어요');return}
+  x0=Math.max(0,x0);y0=Math.max(0,y0);x1=Math.min(bg.width,x1);y1=Math.min(bg.height,y1);
+  const inR=t=>{const cx=t.x+t.w/2,cy=t.y+t.h/2;return cx>=x0&&cx<=x1&&cy>=y0&&cy<=y1};
+  let toks=[],how='';
+  try{
+    busy('일람표 읽는 중…');
+    const F=FILES[sh.fileId];
+    if(F&&F.kind==='pdf'&&typeof pdfjsLib!=='undefined'){toks=(await pdfTokens(F,sh.page,sh.pdfScale||1)).filter(inR);how='PDF 글자'}
+    else if(F&&(F.kind==='dxf'||F.kind==='dwg')){toks=(DXFTXT[sh.id]||[]).filter(inR);how=F.kind.toUpperCase()+' 글자'}
+    if(toks.length<3){toks=await ocrTokens(prepForOCR(bg,x0,y0,x1-x0,y1-y0));how='사진 글자인식'}
+    busy(null);showReview(parseSchedule(toks),how);
+  }catch(e){busy(null);toast(e.message)}
+  setTool('select');
+}
+async function readScheduleFiles(files){
+  const all=[];let how=new Set();
+  try{
+    for(const f of files){
+      const ext=f.name.split('.').pop().toLowerCase();busy(`${f.name} 읽는 중…`);
+      if(ext==='pdf'){
+        if(typeof pdfjsLib==='undefined')throw new Error('PDF 엔진을 불러오지 못했어요');
+        const data=await f.arrayBuffer();const doc=await pdfjsLib.getDocument({data:data.slice(0)}).promise;
+        const F={data};
+        for(let p=1;p<=Math.min(doc.numPages,30);p++){
+          let t=await pdfTokens(F,p,2);
+          if(t.length<3&&p<=5){ // 스캔 PDF → 그림으로 그려서 글자인식
+            busy(`${f.name} ${p}쪽 그리는 중…`);const pg=await doc.getPage(p);const v0=pg.getViewport({scale:1});const sc=Math.min(3,3000/Math.max(v0.width,v0.height));const vp=pg.getViewport({scale:sc});
+            const c=document.createElement('canvas');c.width=vp.width;c.height=vp.height;const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);await pg.render({canvasContext:g,viewport:vp}).promise;
+            t=await ocrTokens(prepForOCR(c,0,0,c.width,c.height));how.add('사진 글자인식')
+          }else how.add('PDF 글자');
+          all.push(...parseSchedule(t).rows);
+        }
+      }else if(ext==='dxf'||ext==='dwg'){
+        const buf=await f.arrayBuffer();const r=ext==='dwg'?await renderDWG(buf):renderDXF(new TextDecoder(guessEnc(buf)).decode(buf));if(r){all.push(...parseSchedule(r.texts).rows);how.add(ext.toUpperCase()+' 글자')}
+      }else{
+        const url=URL.createObjectURL(f);const im=new Image();await new Promise((res,rej)=>{im.onload=res;im.onerror=()=>rej(new Error('이미지를 열 수 없어요'));im.src=url});
+        all.push(...parseSchedule(await ocrTokens(prepForOCR(im,0,0,im.naturalWidth,im.naturalHeight))).rows);how.add('사진 글자인식');URL.revokeObjectURL(url);
+      }
+    }
+    busy(null);
+    const m=new Map();for(const r of all){const p=m.get(r.code);if(!p||(!(p.B||p.H||p.T)&&(r.B||r.H||r.T)))m.set(r.code,r)}
+    showReview({rows:[...m.values()].sort((a,b)=>a.code.localeCompare(b.code,'ko',{numeric:true})),lines:[]},[...how].join(', '));
+  }catch(e){busy(null);toast(e.message)}
+}
+$('#schedFile').onchange=e=>{const l=[...e.target.files];e.target.value='';if(l.length)readScheduleFiles(l)};
+function showReview(res,how){
+  const rows=res.rows;
+  if(!rows.length){
+    modal('일람표를 찾지 못했어요',`<p class="note">부호(G1, C1, S1 같은)와 치수(400×700, THK210 같은)를 찾지 못했어요. 일람표 부분만 더 좁게 감싸거나, 더 선명한 사진으로 다시 해보세요.</p>${res.lines&&res.lines.length?`<details class="raw"><summary>읽은 글자 보기</summary><pre>${esc(res.lines.map(l=>l.text).join('\n'))}</pre></details>`:''}`,()=>{});return}
+  const ex=new Set(S.lib.map(l=>l.code));
+  $('#modal .box').classList.add('wide');
+  modal(`일람표에서 ${rows.length}개 부재를 찾았어요`,`<p class="note">읽은 방식: ${esc(how)} · 값을 확인하고 틀린 곳은 고친 뒤 추가하세요. <span style="background:#fff8e6;padding:0 4px">노란 줄</span>은 이미 일람표에 있는 부호예요.</p>
+   <div class="rv"><table class="grid"><tr><th><input type="checkbox" id="rvAll" checked></th><th>부호</th><th>종류</th><th>B</th><th>H</th><th>T</th><th>읽은 글자</th></tr>
+   ${rows.map((r,i)=>`<tr class="${ex.has(r.code)?'dup':''}"><td><input type="checkbox" data-i="${i}" ${(r.B||r.H||r.T)?'checked':''}></td><td><input data-i="${i}" data-k="code" value="${esc(r.code)}" style="width:70px"></td><td><select data-i="${i}" data-k="type">${TYPES.map(t=>`<option ${t===r.type?'selected':''}>${t}</option>`).join('')}</select></td>
+   <td><input type="number" data-i="${i}" data-k="B" value="${r.B||''}"></td><td><input type="number" data-i="${i}" data-k="H" value="${r.H||''}"></td><td><input type="number" data-i="${i}" data-k="T" value="${r.T||''}"></td><td class="src">${esc(r.src.join(' · ')||'치수 못 찾음')}${r.shared?'<br><b class="warn">⚠ 다른 부호와 같은 값 — 확인</b>':''}</td></tr>`).join('')}</table></div>
+   <label class="note"><input type="checkbox" id="rvOver" checked> 이미 있는 부호는 새 값으로 바꾸기</label>`,b=>{
+    b.querySelectorAll('[data-k]').forEach(el=>{const r=rows[el.dataset.i];const k=el.dataset.k;r[k]=['B','H','T'].includes(k)?(+el.value||0):el.value.trim()});
+    const over=b.querySelector('#rvOver').checked;let n=0;
+    b.querySelectorAll('input[type=checkbox][data-i]').forEach(c=>{if(!c.checked)return;const r=rows[c.dataset.i];if(!r.code)return;const v={code:r.code,type:r.type,B:r.B,H:r.H,T:r.T,note:'일람표 인식'};const e=S.lib.find(l=>l.code===r.code);if(e){if(over){Object.assign(e,v);n++}}else{S.lib.push(v);n++}});
+    $('#modal .box').classList.remove('wide');renderLib();renderCur();refreshDraw();save();toast(`일람표에 ${n}개를 반영했어요`)});
+  $('#mCancel').addEventListener('click',()=>$('#modal .box').classList.remove('wide'),{once:true});
+  const all=$('#rvAll');if(all)all.onchange=()=>$$('#mBody input[type=checkbox][data-i]').forEach(c=>c.checked=all.checked);
+}
+
 /* ---------- 모바일 ---------- */
 function isMobile(){return window.matchMedia('(max-width:900px)').matches}
 let sheetOpenedAt=0;
@@ -891,14 +1148,13 @@ $('#dDone').onclick=()=>finishDraft();
 })();
 window.__S=()=>S;
 /* ---------- 앱(PWA) ---------- */
-if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
+if('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !/claude|anthropic/.test(location.host)){
   window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(()=>{})});
 }
 let installEvt=null;
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e;$('#btnInstall').style.display=''});
 $('#btnInstall').onclick=async()=>{if(!installEvt)return;installEvt.prompt();try{await installEvt.userChoice}catch(_){}installEvt=null;$('#btnInstall').style.display='none'};
 window.addEventListener('appinstalled',()=>{$('#btnInstall').style.display='none';toast('앱이 설치됐어요')});
-// 파일 앱에서 "타설집계로 열기"
 if('launchQueue' in window){launchQueue.setConsumer(async p=>{if(!p.files||!p.files.length)return;const fs=[];for(const h of p.files)fs.push(await h.getFile());handleFiles(fs)})}
 </script>
 </body>

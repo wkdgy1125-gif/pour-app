@@ -1,5 +1,5 @@
 // 타설집계 오프라인 캐시
-const VER = 'pour-v1';
+const VER = 'pour-v3';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 const CDN = [
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
@@ -36,7 +36,7 @@ self.addEventListener('fetch', e => {
   }
   // 그 외(아이콘, 라이브러리, 글꼴): 캐시 우선, 없으면 받아서 저장
   e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(r => {
-    if (r && (r.ok || r.type === 'opaque') && (url.origin === location.origin || /cdnjs|fonts\.(googleapis|gstatic)/.test(url.host))) {
+    if (r && (r.ok || r.type === 'opaque') && (url.origin === location.origin || /cdnjs|jsdelivr|tessdata|fonts\.(googleapis|gstatic)/.test(url.host))) {
       const cp = r.clone(); caches.open(VER).then(c => c.put(req, cp));
     }
     return r;
