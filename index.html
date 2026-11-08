@@ -347,6 +347,7 @@ const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const uid=()=>Math.random().toString(36).slice(2,10);
 const r3=n=>Math.round(n*1000)/1000;
 const fmt=(n,d=3)=>(isFinite(n)?n:0).toLocaleString('ko-KR',{minimumFractionDigits:d,maximumFractionDigits:d});
+function errMsg(e){const n=e&&e.name||'';if(n==='NotFoundError'||n==='NotReadableError')return '파일을 읽지 못했어요. 휴대폰에 다운로드한 파일로 다시 골라주세요';return (e&&e.message)||String(e)}
 function busy(m){const t=$('#toast');clearTimeout(t._t);if(m){t.textContent=m;t.classList.add('on')}else t.classList.remove('on')}
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('on'),2200)}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -380,10 +381,21 @@ $$('nav.tabs button').forEach(b=>b.onclick=()=>{
 const drop=$('#drop');
 ['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('over')}));
 ['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('over')}));
-drop.addEventListener('drop',ev=>handleFiles([...ev.dataTransfer.files]));
-$('#fileIn').onchange=e=>{const l=[...e.target.files];e.target.value='';handleFiles(l)};
+drop.addEventListener('drop',async ev=>handleFiles(await grabFiles(ev.dataTransfer)));
+// 고른 파일을 즉시 메모리로 읽어둠 (안드로이드·클라우드 파일은 나중에 읽으면 권한이 사라짐)
+async function grabFiles(input){
+  const list=[...(input.files||[])];const out=[],bad=[];
+  busy(list.length?'파일 읽는 중…':null);
+  await Promise.all(list.map(async f=>{try{const buf=await f.arrayBuffer();out.push({name:f.name,size:buf.byteLength,arrayBuffer:()=>Promise.resolve(buf.slice(0)),buf})}catch(e){bad.push(f.name)}}));
+  try{input.value=''}catch(_){}
+  busy(null);
+  if(bad.length)modal('파일을 읽지 못했어요',`<p class="note"><b>${bad.map(esc).join(', ')}</b><br><br>휴대폰에서 파일 접근이 거부됐어요. 원드라이브·구글드라이브의 <b>온라인 전용 파일</b>이면 흔히 생겨요.<br><br>① 원드라이브(또는 내 파일) 앱에서 그 파일을 <b>휴대폰에 다운로드(오프라인 사용)</b>한 뒤<br>② 다시 선택하면서 <b>"내 파일 → 다운로드"</b> 폴더에서 골라주세요.</p>`,()=>{});
+  out.sort((a,b)=>list.findIndex(f=>f.name===a.name)-list.findIndex(f=>f.name===b.name));
+  return out;
+}
+$('#fileIn').onchange=async e=>{const l=await grabFiles(e.target);if(l.length)handleFiles(l)};
 $('#stage').addEventListener('dragover',e=>e.preventDefault());
-$('#stage').addEventListener('drop',e=>{e.preventDefault();handleFiles([...e.dataTransfer.files])});
+$('#stage').addEventListener('drop',async e=>{e.preventDefault();handleFiles(await grabFiles(e.dataTransfer))});
 
 async function handleFiles(list){
   for(const f of list){
@@ -397,7 +409,7 @@ async function handleFiles(list){
         const doc=await pdfjsLib.getDocument({data:data.slice(0)}).promise;
         for(let p=1;p<=doc.numPages;p++)addSheet({fileId:fid,kind,page:p,name:f.name.replace(/\.pdf$/i,'')+(doc.numPages>1?` (${p}p)`:'')});
       }else addSheet({fileId:fid,kind,page:1,name:f.name.replace(/\.[^.]+$/,'')});
-    }catch(e){toast('열기 실패: '+e.message)}
+    }catch(e){toast('열기 실패: '+errMsg(e))}
   }
   renderSheets();save();
 }
@@ -549,7 +561,7 @@ async function selectSheet(id){
   if(isMobile())closeSheets();
   S.activeSheet=id;selId=null;draft=null;renderSheets();
   const sh=curSheet();if(!sh){draw();return}
-  try{await loadBG(sh)}catch(e){toast(e.message)}
+  try{await loadBG(sh)}catch(e){toast(errMsg(e))}
   fit();refreshDraw();save();
   if(sh&&!sh.scale)setHint('먼저 [축척]으로 도면의 아는 치수 두 점을 찍어 축척을 맞춰주세요');
 }
@@ -1070,7 +1082,7 @@ async function readRegion(sh,x0,y0,x1,y1){
     else if(F&&(F.kind==='dxf'||F.kind==='dwg')){toks=(DXFTXT[sh.id]||[]).filter(inR);how=F.kind.toUpperCase()+' 글자'}
     if(toks.length<3){toks=await ocrTokens(prepForOCR(bg,x0,y0,x1-x0,y1-y0));how='사진 글자인식'}
     busy(null);showReview(parseSchedule(toks),how);
-  }catch(e){busy(null);toast(e.message)}
+  }catch(e){busy(null);toast(errMsg(e))}
   setTool('select');
 }
 async function readScheduleFiles(files){
@@ -1094,16 +1106,16 @@ async function readScheduleFiles(files){
       }else if(ext==='dxf'||ext==='dwg'){
         const buf=await f.arrayBuffer();const r=ext==='dwg'?await renderDWG(buf):renderDXF(new TextDecoder(guessEnc(buf)).decode(buf));if(r){all.push(...parseSchedule(r.texts).rows);how.add(ext.toUpperCase()+' 글자')}
       }else{
-        const url=URL.createObjectURL(f);const im=new Image();await new Promise((res,rej)=>{im.onload=res;im.onerror=()=>rej(new Error('이미지를 열 수 없어요'));im.src=url});
+        const url=URL.createObjectURL(new Blob([await f.arrayBuffer()]));const im=new Image();await new Promise((res,rej)=>{im.onload=res;im.onerror=()=>rej(new Error('이미지를 열 수 없어요'));im.src=url});
         all.push(...parseSchedule(await ocrTokens(prepForOCR(im,0,0,im.naturalWidth,im.naturalHeight))).rows);how.add('사진 글자인식');URL.revokeObjectURL(url);
       }
     }
     busy(null);
     const m=new Map();for(const r of all){const p=m.get(r.code);if(!p||(!(p.B||p.H||p.T)&&(r.B||r.H||r.T)))m.set(r.code,r)}
     showReview({rows:[...m.values()].sort((a,b)=>a.code.localeCompare(b.code,'ko',{numeric:true})),lines:[]},[...how].join(', '));
-  }catch(e){busy(null);toast(e.message)}
+  }catch(e){busy(null);toast(errMsg(e))}
 }
-$('#schedFile').onchange=e=>{const l=[...e.target.files];e.target.value='';if(l.length)readScheduleFiles(l)};
+$('#schedFile').onchange=async e=>{const l=await grabFiles(e.target);if(l.length)readScheduleFiles(l)};
 function showReview(res,how){
   const rows=res.rows;
   if(!rows.length){
