@@ -220,6 +220,7 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
     <p class="note" style="margin:6px 0 0">DWG·DXF는 실제 치수(mm)로 축척이 자동으로 잡혀요. DWG는 처음 열 때 변환 엔진(약 11MB)을 받아요.</p>
     <div id="sheetList" style="margin-top:10px"></div>
 
+    <div class="bar" style="margin:8px 0 0"><button class="btn sm" onclick="showDiag()">진단 정보</button><span class="note" id="verLbl"></span></div>
     <h3>층 / 층고</h3>
     <table class="mini" id="floorTbl"></table>
     <button class="btn sm" id="addFloor" style="margin-top:4px">+ 층 추가</button>
@@ -245,6 +246,8 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
       <button id="fitBtn" title="화면 맞춤 (F)">맞춤</button>
     </div>
     <canvas id="cv"></canvas>
+    <div class="empty" id="sheetLoading" style="display:none;background:rgba(231,229,223,.85)"><div style="font-weight:600;color:var(--ink)">도면 그리는 중…</div><div class="note">DWG는 처음에 변환 엔진을 받느라 시간이 걸려요</div></div>
+    <div class="empty" id="sheetErr" style="display:none;z-index:4;padding:20px;text-align:center"></div>
     <div class="empty" id="emptyMsg">
       <div style="font-size:15px;font-weight:600;color:var(--ink)">도면을 올려 시작하세요</div>
       <div class="note">① 도면 업로드 → ② 축척 설정 → ③ 부호 선택 후 구획 그리기</div>
@@ -414,7 +417,11 @@ $('#fileIn').onchange=async e=>{const l=await grabFiles(e.target);if(l.length)ha
 $('#stage').addEventListener('dragover',e=>e.preventDefault());
 $('#stage').addEventListener('drop',async e=>{e.preventDefault();handleFiles(await grabFiles(e.dataTransfer))});
 
+// 휴대폰은 큰 캔버스를 못 그려서(하얀 화면) 픽셀 수를 제한
+function fitScale(w,h,maxK){const maxSide=isMobile()?4096:6000,maxArea=isMobile()?12e6:30e6;let k=Math.min(maxK,maxSide/Math.max(w,h));if(w*h*k*k>maxArea)k=Math.sqrt(maxArea/(w*h));return k}
+async function ensurePDF(){if(typeof pdfjsLib!=='undefined')return true;for(const u of ['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js']){await new Promise(res=>{const sc=document.createElement('script');sc.src=u;sc.onload=res;sc.onerror=res;document.head.appendChild(sc)})}return typeof pdfjsLib!=='undefined'}
 async function handleFiles(list){
+  let first=null;
   for(const f of list){
     const ext=f.name.split('.').pop().toLowerCase();
     const data=await f.arrayBuffer(); const fid=uid();
@@ -422,30 +429,31 @@ async function handleFiles(list){
     FILES[fid]={name:f.name,kind,data}; await idbPut('file:'+fid,FILES[fid]);
     try{
       if(kind==='pdf'){
-        if(typeof pdfjsLib==='undefined')throw new Error('PDF 엔진을 불러오지 못했어요 (네트워크 확인)');
+        if(!(await ensurePDF()))throw new Error('PDF 엔진을 불러오지 못했어요 (인터넷 연결 확인)');
         const doc=await pdfjsLib.getDocument({data:data.slice(0)}).promise;
-        for(let p=1;p<=doc.numPages;p++)addSheet({fileId:fid,kind,page:p,name:f.name.replace(/\.pdf$/i,'')+(doc.numPages>1?` (${p}p)`:'')});
-      }else addSheet({fileId:fid,kind,page:1,name:f.name.replace(/\.[^.]+$/,'')});
-    }catch(e){toast('열기 실패: '+errMsg(e))}
+        for(let p=1;p<=doc.numPages;p++){const sh=addSheet({fileId:fid,kind,page:p,name:f.name.replace(/\.pdf$/i,'')+(doc.numPages>1?` (${p}p)`:'')});if(!first)first=sh}
+      }else{const sh=addSheet({fileId:fid,kind,page:1,name:f.name.replace(/\.[^.]+$/,'')});if(!first)first=sh}
+    }catch(e){logErr('파일 열기',e);toast('열기 실패: '+errMsg(e))}
   }
   renderSheets();save();
+  if(first)selectSheet(first.id);   // 새로 불러온 도면을 바로 화면에 표시
 }
-function addSheet(o){const sh={id:uid(),scale:null,...o};S.sheets.push(sh);if(!S.activeSheet)selectSheet(sh.id);return sh}
+function addSheet(o){const sh={id:uid(),scale:null,...o};S.sheets.push(sh);return sh}
 
 async function loadBG(sh){
   if(BG[sh.id])return BG[sh.id];
   let F=FILES[sh.fileId]; if(!F){F=await idbGet('file:'+sh.fileId); if(F)FILES[sh.fileId]=F}
-  if(!F)return null;
+  if(!F)throw new Error('저장된 도면 파일을 찾지 못했어요. 도면을 다시 불러와 주세요');
   if(F.kind==='img'){
     const url=URL.createObjectURL(new Blob([F.data]));
     const im=new Image(); await new Promise((r,j)=>{im.onload=r;im.onerror=j;im.src=url});
     BG[sh.id]=im; return im;
   }
   if(F.kind==='pdf'){
-    if(typeof pdfjsLib==='undefined')return null;
+    if(!(await ensurePDF()))throw new Error('PDF 엔진을 불러오지 못했어요 (인터넷 연결 확인)');
     const doc=await pdfjsLib.getDocument({data:F.data.slice(0)}).promise;
     const pg=await doc.getPage(sh.page); const v0=pg.getViewport({scale:1});
-    const sc=Math.min(4,5000/Math.max(v0.width,v0.height)); const vp=pg.getViewport({scale:sc});
+    const sc=fitScale(v0.width,v0.height,4); const vp=pg.getViewport({scale:sc});
     const c=document.createElement('canvas');c.width=Math.round(vp.width);c.height=Math.round(vp.height);
     const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);
     await pg.render({canvasContext:x,viewport:vp}).promise;
@@ -509,7 +517,7 @@ function renderOut(out){
   const ok=v=>isFinite(v);const X=xs.filter(ok).sort((a,b)=>a-b),Y=ys.filter(ok).sort((a,b)=>a-b);if(!X.length)return null;
   const q=(A,f)=>A[Math.min(A.length-1,Math.max(0,Math.floor(A.length*f)))];
   let x0=q(X,.002),x1=q(X,.998),y0=q(Y,.002),y1=q(Y,.998);const pad=Math.max(x1-x0,y1-y0)*.02;x0-=pad;x1+=pad;y0-=pad;y1+=pad;
-  const k=Math.min(6000/Math.max(x1-x0,y1-y0),50);
+  const k=fitScale(x1-x0,y1-y0,50);
   const c=document.createElement('canvas');c.width=Math.ceil((x1-x0)*k);c.height=Math.ceil((y1-y0)*k);
   const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#222';g.fillStyle='#222';g.lineWidth=Math.max(1.5,Math.max(c.width,c.height)/1600);
   const T=p=>[(p[0]-x0)*k,(y1-p[1])*k];
@@ -525,13 +533,13 @@ let DWGLIB=null;
 async function getDWG(){
   if(DWGLIB)return DWGLIB;
   busy('DWG 변환 엔진 준비 중… (처음 한 번만 약 11MB 받아요)');
-  let lastErr=null;
+  const errs=[];
   for(const [url,arg] of [[DWG_BASE+'dist/libredwg-web.js',undefined],[DWG_BASE+'dist/libredwg-web.js',DWG_BASE+'wasm/'],[DWG_BASE+'+esm',DWG_BASE+'wasm/']]){
     try{const m=await import(url);const L=m.LibreDwg||(m.default&&m.default.LibreDwg);if(!L)throw new Error('LibreDwg 없음');
       const lib=arg===undefined?await L.create():await L.create(arg);DWGLIB={lib,T:m.Dwg_File_Type||{DWG:0}};return DWGLIB}
-    catch(e){lastErr=e}
+    catch(e){errs.push((e&&e.message)||String(e))}
   }
-  throw new Error('DWG 변환 엔진을 불러오지 못했어요. 인터넷 연결을 확인하거나, 설치한 앱/HTML 파일에서 열어주세요'+(lastErr?` (${lastErr.message})`:''));
+  throw new Error('DWG 변환 엔진을 불러오지 못했어요. 인터넷 연결을 확인하거나, 설치한 앱/HTML 파일에서 열어주세요'+(errs.length?` (${[...new Set(errs)].join(' / ')})`:''));
 }
 const P2=p=>p?[+p.x||0,+p.y||0]:[0,0];
 const ANG=a=>{a=+a||0;return Math.abs(a)>Math.PI*2+0.01?a*Math.PI/180:a};
@@ -577,8 +585,13 @@ function renderSheets(){
 async function selectSheet(id){
   if(isMobile())closeSheets();
   S.activeSheet=id;selId=null;draft=null;renderSheets();
-  const sh=curSheet();if(!sh){draw();return}
-  try{await loadBG(sh)}catch(e){toast(errMsg(e))}
+  const sh=curSheet();if(!sh){showSheetErr(null);draw();return}
+  showSheetErr(null);
+  if(!BG[sh.id]){busy(`${sh.name} 그리는 중…`);$('#sheetLoading').style.display='flex'}
+  try{const bg=await loadBG(sh);if(!bg)throw new Error('도면을 그리지 못했어요')}
+  catch(e){logErr('도면 표시 ('+sh.kind+')',e);showSheetErr(sh,errMsg(e))}
+  finally{busy(null);$('#sheetLoading').style.display='none'}
+  if(S.activeSheet!==id)return;
   fit();refreshDraw();save();
   if(sh&&!sh.scale)setHint('먼저 [축척]으로 도면의 아는 치수 두 점을 찍어 축척을 맞춰주세요');
 }
@@ -1099,7 +1112,7 @@ async function readRegion(sh,x0,y0,x1,y1){
     else if(F&&(F.kind==='dxf'||F.kind==='dwg')){toks=(DXFTXT[sh.id]||[]).filter(inR);how=F.kind.toUpperCase()+' 글자'}
     if(toks.length<3){toks=await ocrTokens(prepForOCR(bg,x0,y0,x1-x0,y1-y0));how='사진 글자인식'}
     busy(null);showReview(parseSchedule(toks),how);
-  }catch(e){busy(null);toast(errMsg(e))}
+  }catch(e){busy(null);logErr('일람표 읽기',e);toast(errMsg(e))}
   setTool('select');
 }
 async function readScheduleFiles(files){
@@ -1130,7 +1143,7 @@ async function readScheduleFiles(files){
     busy(null);
     const m=new Map();for(const r of all){const p=m.get(r.code);if(!p||(!(p.B||p.H||p.T)&&(r.B||r.H||r.T)))m.set(r.code,r)}
     showReview({rows:[...m.values()].sort((a,b)=>a.code.localeCompare(b.code,'ko',{numeric:true})),lines:[]},[...how].join(', '));
-  }catch(e){busy(null);toast(errMsg(e))}
+  }catch(e){busy(null);logErr('일람표 읽기',e);toast(errMsg(e))}
 }
 $('#schedFile').onchange=async e=>{const l=await grabFiles(e.target);if(l.length)readScheduleFiles(l)};
 function showReview(res,how){
@@ -1152,6 +1165,30 @@ function showReview(res,how){
   const all=$('#rvAll');if(all)all.onchange=()=>$$('#mBody input[type=checkbox][data-i]').forEach(c=>c.checked=all.checked);
 }
 
+
+
+/* ---------- 오류 표시 / 진단 ---------- */
+const APP_VER='2026.11.12';const ERRLOG=[];
+function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
+window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
+window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
+function showSheetErr(sh,msg){const el=$('#sheetErr');if(!sh){el.style.display='none';return}
+  el.innerHTML=`<div style="font-size:15px;font-weight:700;color:var(--ink)">이 도면을 표시하지 못했어요</div><div class="note" style="max-width:420px">${esc(sh.name)} (${esc(sh.kind.toUpperCase())})<br><span class="warn">${esc(msg)}</span></div>
+   <div class="bar" style="justify-content:center"><button class="btn pri" id="seRetry">다시 시도</button><button class="btn" id="seOther">다른 도면 고르기</button><button class="btn danger" id="seDel">이 도면 삭제</button></div>
+   <div class="note">계속 안 되면 <b>☰ 도면 → 진단 정보</b> 화면을 캡처해서 보내주세요</div>`;
+  el.style.display='flex';
+  $('#seRetry').onclick=()=>{delete BG[sh.id];selectSheet(sh.id)};
+  $('#seOther').onclick=()=>{isMobile()?openSheet('left'):$('#fileIn').click()};
+  $('#seDel').onclick=()=>{S.sheets=S.sheets.filter(x=>x.id!==sh.id);S.shapes=S.shapes.filter(x=>x.sheetId!==sh.id);S.activeSheet=S.sheets[0]?.id||null;showSheetErr(null);renderSheets();if(S.activeSheet)selectSheet(S.activeSheet);else refreshDraw();save()};
+}
+async function showDiag(){
+  let sw='없음';try{const r=await navigator.serviceWorker?.getRegistration();sw=r?(r.active?'작동 중':'설치 중'):'없음';if(navigator.serviceWorker?.controller)sw+=' (제어 중)'}catch(_){}
+  const sh=curSheet();
+  const txt=[`앱 버전: ${APP_VER}`,`주소: ${location.href}`,`설치형 실행: ${matchMedia('(display-mode: standalone)').matches?'예':'아니오'}`,`기기: ${navigator.userAgent}`,`화면: ${innerWidth}x${innerHeight} @${devicePixelRatio}`,
+    `PDF 엔진: ${typeof pdfjsLib!=='undefined'?'OK':'없음'} / 엑셀: ${typeof XLSX!=='undefined'?'OK':'없음'} / DWG 엔진: ${DWGLIB?'OK':'아직 안 받음'}`,`오프라인 캐시: ${sw}`,`저장소: ${idb?'OK':'불가'}`,
+    `도면 ${S.sheets.length}개: ${S.sheets.map(x=>x.kind+(BG[x.id]?'✓':'✗')).join(', ')}`,`현재 도면: ${sh?sh.name+' ('+sh.kind+')':'-'}`,'--- 최근 오류 ---',...(ERRLOG.length?ERRLOG:['없음'])].join('\n');
+  modal('진단 정보',`<p class="note">이 화면을 캡처해서 보내주시면 원인을 찾을 수 있어요.</p><textarea readonly style="height:260px">${esc(txt)}</textarea>`,()=>{});
+}
 
 /* ---------- 원드라이브 직접 연결 (Microsoft Graph, PKCE) ---------- */
 const OD_DEFAULT_CID='';   // 앱 등록 후 받은 클라이언트 ID
@@ -1317,7 +1354,7 @@ $('#dDone').onclick=()=>finishDraft();
   try{if(typeof pdfjsLib!=='undefined'){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}}catch(e){}
   await openDB();
   const st=await idbGet('state');if(st&&st.v===1){S=Object.assign(S,st);S.set=Object.assign({beamDeduct:0,colDeduct:0,loss:0,g1:'floor',g2:'type',g3:'code',filt:{}},S.set)}
-  resize();applyState();setTool('select');receiveShared();odHandleRedirect();
+  resize();applyState();setTool('select');receiveShared();odHandleRedirect();$('#verLbl').textContent='버전 '+APP_VER;
   $('#saveState').textContent=idb?'이 브라우저에 자동 저장됨':'';
 })();
 window.__S=()=>S;
