@@ -607,18 +607,33 @@ $('#addFloor').onclick=()=>{S.floors.push({name:(S.floors.length+1)+'F',h:3600})
 $('#setBeamDeduct').onchange=e=>{S.set.beamDeduct=+e.target.value||0;refreshDraw();save()};
 $('#setColDeduct').onchange=e=>{S.set.colDeduct=+e.target.value||0;refreshDraw();save()};
 
-function codeOpts(sel){return S.lib.map(l=>`<option value="${esc(l.code)}" ${l.code===sel?'selected':''}>${esc(l.code)} · ${esc(l.type)}${dimStr(l)?' · '+dimStr(l):''}</option>`).join('')}
+// 부호 끝의 (B1F)/(3F) 같은 층 표시 → 층별 부호 목록
+const normF=f=>String(f||'').toUpperCase().replace(/\s|층/g,'').replace(/^지하(\d+)/,'B$1').replace(/^지상/,'').replace(/F$/,'');
+const codeFloor=c=>{const m=String(c).match(/\(([^()]+)\)\s*$/);return m?normF(m[1]):null};
+const codeBase=c=>String(c).replace(/\s*\([^()]+\)\s*$/,'');
+function libFor(floor){const f=normF(floor);const L=S.lib.filter(l=>{const cf=codeFloor(l.code);return !cf||cf.includes('~')||cf===f});return L.length?L:S.lib}
+function codeOpts(sel,floor){const L=floor!==undefined?libFor(floor):S.lib;const list=L.some(l=>l.code===sel)?L:[...(S.lib.filter(l=>l.code===sel)),...L];return list.map(l=>`<option value="${esc(l.code)}" ${l.code===sel?'selected':''}>${esc(l.code)} · ${esc(l.type)}${dimStr(l)?' · '+dimStr(l):''}</option>`).join('')}
 function floorOpts(sel){return S.floors.map(f=>`<option ${f.name===sel?'selected':''}>${esc(f.name)}</option>`).join('')}
 function dimStr(l){const a=[];if(l.B)a.push(l.B);if(l.H)a.push(l.H);let s=a.join('×');if(l.T)s+=(s?' ':'')+'T'+l.T;return s}
+function addFloorsFromLib(){
+  const have=new Set(S.floors.map(f=>normF(f.name)));const add=new Set();
+  S.lib.forEach(l=>{const f=codeFloor(l.code);if(f&&!f.includes('~')&&/^B?\d+$/.test(f)&&!have.has(f))add.add(f)});
+  if(!add.size)return 0;
+  const num=f=>f.startsWith('B')?-parseInt(f.slice(1)):parseInt(f);
+  add.forEach(f=>S.floors.push({name:(f.startsWith('B')?f:f)+'F',h:f.startsWith('B')?4500:3600}));
+  S.floors.sort((a,b)=>{const x=normF(a.name),y=normF(b.name);const nx=/^B?\d+$/.test(x)?num(x):999,ny=/^B?\d+$/.test(y)?num(y):999;return nx-ny});
+  return add.size;
+}
 function renderCur(){
   if(!S.lib.find(l=>l.code===S.cur.code))S.cur.code=S.lib[0]?.code||'';
   if(!S.floors.find(f=>f.name===S.cur.floor))S.cur.floor=S.floors[0]?.name||'';
-  $('#curCode').innerHTML=codeOpts(S.cur.code);$('#curFloor').innerHTML=floorOpts(S.cur.floor);$('#mCode').innerHTML=S.lib.map(l=>`<option value="${esc(l.code)}" ${l.code===S.cur.code?'selected':''}>${esc(l.code)} · ${esc(l.type)}</option>`).join('');$('#mFloor').innerHTML=floorOpts(S.cur.floor);$('#curZone').value=S.cur.zone;
+  { const L=libFor(S.cur.floor); if(!L.some(l=>l.code===S.cur.code)){const same=L.find(l=>codeBase(l.code)===codeBase(S.cur.code));S.cur.code=(same||L[0]||{}).code||S.cur.code} }
+  $('#curCode').innerHTML=codeOpts(S.cur.code,S.cur.floor);$('#curFloor').innerHTML=floorOpts(S.cur.floor);$('#mCode').innerHTML=libFor(S.cur.floor).map(l=>`<option value="${esc(l.code)}" ${l.code===S.cur.code?'selected':''}>${esc(l.code)} · ${esc(l.type)}</option>`).join('');$('#mFloor').innerHTML=floorOpts(S.cur.floor);$('#curZone').value=S.cur.zone;
   const zs=[...new Set(S.shapes.map(s=>s.zone).filter(Boolean))];$('#zoneList').innerHTML=zs.map(z=>`<option value="${esc(z)}">`).join('');
   $('#legend').innerHTML=TYPES.map(t=>`<span><i style="background:${TCOLOR[t]}"></i>${t}</span>`).join('');
 }
 $('#curCode').onchange=e=>{S.cur.code=e.target.value;save();suggestTool()};
-$('#curFloor').onchange=e=>{S.cur.floor=e.target.value;save()};
+$('#curFloor').onchange=e=>{S.cur.floor=e.target.value;renderCur();save()};
 $('#curZone').oninput=e=>{S.cur.zone=e.target.value;save()};
 function suggestTool(){const l=libOf(S.cur.code);if(!l)return;const t={'기둥':'count','보':'line','벽체':'line','슬래브':'poly'}[l.type];if(t&&tool!=='select'&&tool!=='scale'&&tool!==t&&!(t==='poly'&&tool==='rect'))setTool(t==='poly'?'rect':t)}
 
@@ -804,7 +819,7 @@ function renderSel(){
   if(!s){P.className='note';P.innerHTML='도면에서 구획을 클릭하면 여기서 수정할 수 있어요.';return}
   const c=calc(s);P.className='';
   P.innerHTML=`<div class="card selc">
-    <div class="field"><label>부재 부호</label><select data-k="code">${codeOpts(s.code)}</select></div>
+    <div class="field"><label>부재 부호</label><select data-k="code">${codeOpts(s.code,s.floor)}</select></div>
     <div class="row2"><div class="field"><label>층</label><select data-k="floor">${floorOpts(s.floor)}</select></div>
     <div class="field"><label>타설 구획</label><input data-k="zone" list="zoneList" value="${esc(s.zone)}"></div></div>
     <div class="row2"><div class="field"><label>배수 (반복 개소)</label><input type="number" data-k="mult" value="${s.mult}" step="1"></div>
@@ -814,7 +829,7 @@ function renderSel(){
     <div style="font-size:12px;margin:6px 0 2px">${c.g.q==null?'':`<span class="chip">${fmt(c.g.q,s.kind==='count'?0:2)} ${c.g.u}</span> `}${esc(c.f)}</div>
     <div style="font:600 18px var(--mono)">${c.warn?`<span class="warn" style="font-size:13px">⚠ ${c.warn}</span>`:fmt(c.vol)+' m³'}</div>
     <div class="bar" style="margin:8px 0 0"><button class="btn sm danger" id="selDel">구획 삭제</button><button class="btn sm" id="selDup">복제</button></div></div>`;
-  P.querySelectorAll('[data-k]').forEach(el=>el.onchange=()=>{const k=el.dataset.k;s[k]=['mult','adj','h'].includes(k)?(+el.value||0):el.value;if(k==='mult'&&!s.mult)s.mult=1;refreshDraw();save()});
+  P.querySelectorAll('[data-k]').forEach(el=>el.onchange=()=>{const k=el.dataset.k;s[k]=['mult','adj','h'].includes(k)?(+el.value||0):el.value;if(k==='floor'){const L=libFor(s.floor);if(!L.some(l=>l.code===s.code)){const same=L.find(l=>codeBase(l.code)===codeBase(s.code));if(same)s.code=same.code}}if(k==='mult'&&!s.mult)s.mult=1;refreshDraw();save()});
   $('#selDel').onclick=()=>delShape(s.id);
   $('#selDup').onclick=()=>{const n=JSON.parse(JSON.stringify(s));n.id=uid();const off=20/view.z;n.pts=n.pts.map(p=>[p[0]+off,p[1]+off]);S.shapes.push(n);selId=n.id;refreshDraw();save()};
 }
@@ -850,7 +865,7 @@ $('#libFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(
   try{if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());const arr=Array.isArray(j)?j:j.lib||[];arr.forEach(it=>{const ex=S.lib.find(l=>l.code===it.code);const v={code:it.code,type:typeOf(it.type||it.code),B:+it.B||0,H:+it.H||0,T:+it.T||0,note:it.note||''};if(ex)Object.assign(ex,v);else S.lib.push(v);n++})}
   else{if(typeof XLSX==='undefined')throw new Error('엑셀 엔진 로드 실패');const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});for(const nm of wb.SheetNames)n+=importRows(XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,raw:false}))}}
   catch(err){toast('불러오기 실패: '+err.message);return}
-  toast(`부재 ${n}개를 불러왔어요`);renderLib();renderCur();save()};
+  const nf=addFloorsFromLib();toast(`부재 ${n}개를 불러왔어요`+(nf?` · 층 ${nf}개 추가`:''));renderFloors();renderLib();renderCur();save()};
 $('#libPaste').onclick=()=>modal('엑셀에서 붙여넣기','<p class="note">엑셀 범위를 복사(Ctrl+C)해서 아래에 붙여넣으세요. 첫 줄이 머리글이면 이름으로 열을 찾아요.</p><textarea id="mPaste" placeholder="부호	종류	B	H	T	비고"></textarea>',b=>{const rows=b.querySelector('#mPaste').value.split(/\r?\n/).map(l=>l.split('\t'));const n=importRows(rows);toast(`부재 ${n}개를 반영했어요`);renderLib();renderCur();save()});
 
 /* ---------- 집계 ---------- */
@@ -1160,7 +1175,7 @@ function showReview(res,how){
     b.querySelectorAll('[data-k]').forEach(el=>{const r=rows[el.dataset.i];const k=el.dataset.k;r[k]=['B','H','T'].includes(k)?(+el.value||0):el.value.trim()});
     const over=b.querySelector('#rvOver').checked;let n=0;
     b.querySelectorAll('input[type=checkbox][data-i]').forEach(c=>{if(!c.checked)return;const r=rows[c.dataset.i];if(!r.code)return;const v={code:r.code,type:r.type,B:r.B,H:r.H,T:r.T,note:'일람표 인식'};const e=S.lib.find(l=>l.code===r.code);if(e){if(over){Object.assign(e,v);n++}}else{S.lib.push(v);n++}});
-    $('#modal .box').classList.remove('wide');renderLib();renderCur();refreshDraw();save();toast(`일람표에 ${n}개를 반영했어요`)});
+    $('#modal .box').classList.remove('wide');const nf=addFloorsFromLib();renderFloors();renderLib();renderCur();refreshDraw();save();toast(`일람표에 ${n}개를 반영했어요`+(nf?` · 층 ${nf}개 추가`:''))});
   $('#mCancel').addEventListener('click',()=>$('#modal .box').classList.remove('wide'),{once:true});
   const all=$('#rvAll');if(all)all.onchange=()=>$$('#mBody input[type=checkbox][data-i]').forEach(c=>c.checked=all.checked);
 }
@@ -1168,7 +1183,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.12';const ERRLOG=[];
+const APP_VER='2026.11.12b';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
