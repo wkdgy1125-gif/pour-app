@@ -307,6 +307,7 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
     </div>
     <div class="bar">
       <button class="btn" id="libAdd">+ 행 추가</button>
+      <button class="btn" id="libJunk" title="숫자만 있는 등 잘못 읽힌 부호 지우기">잘못 읽힌 부호 정리</button>
       <label class="btn">엑셀/CSV 불러오기<input type="file" id="libFile" accept=".xlsx,.xls,.csv,.json" hidden></label>
       <label class="btn acc">도면·사진·PDF에서 읽기<input type="file" id="schedFile" accept=".pdf,.jpg,.jpeg,.png,.webp,.dxf,.dwg,image/*" multiple hidden></label>
       <button class="btn od" data-od="lib">☁ 원드라이브에서 읽기</button>
@@ -556,6 +557,9 @@ function flatten(ents,blocks,tf,out,depth){
       case 'CIRCLE':{const c=ap(+gv(e,10),+gv(e,20));out.push({k:'c',c,r:(+gv(e,40))*sc,a0:0,a1:Math.PI*2});break}
       case 'ARC':{const c=ap(+gv(e,10),+gv(e,20));const rot=Math.atan2(tf[1],tf[0]);const mir=(tf[0]*tf[3]-tf[1]*tf[2])<0;let a0=(+gv(e,50))*Math.PI/180,a1=(+gv(e,51))*Math.PI/180;if(mir){[a0,a1]=[Math.PI-a1,Math.PI-a0]}out.push({k:'c',c,r:(+gv(e,40))*sc,a0:a0+rot,a1:a1+rot});break}
       case 'TEXT':case 'MTEXT':{const t=(gv(e,1)||'').replace(/\\P/g,' ').replace(/\\[A-Za-z][^;]*;/g,'').replace(/[{}]/g,'');if(t)out.push({k:'t',p:ap(+gv(e,10),+gv(e,20)),h:(+gv(e,40)||2.5)*sc,s:t,rot:((+gv(e,50))||0)*Math.PI/180+Math.atan2(tf[1],tf[0])});break}
+      case 'DIMENSION':{const b=blocks[gv(e,2)];if(b&&depth<=5){flatten(b.ents,blocks,tf,out,depth+1);break}
+        let t=gv(e,1);const m=+gv(e,42);if(!t||t==='<>')t=isFinite(m)&&m?String(Math.round(m)):'';if(t&&t!==' ')out.push({k:'t',p:ap(+gv(e,11),+gv(e,21)),h:250*sc,s:t.replace(/\\[A-Za-z][^;]*;/g,'').replace(/<>/,isFinite(m)?String(Math.round(m)):''),rot:((+gv(e,53))||0)*Math.PI/180});
+        if(gv(e,13)!=null&&gv(e,14)!=null)out.push({k:'l',p:[ap(+gv(e,13),+gv(e,23)),ap(+gv(e,14),+gv(e,24))]});break}
       case 'INSERT':{if(depth>5)break;const b=blocks[gv(e,2)];if(!b)break;const sx=+(gv(e,41)??1)||1,sy=+(gv(e,42)??1)||1,rot=((+gv(e,50))||0)*Math.PI/180;const ix=+gv(e,10)||0,iy=+gv(e,20)||0;
         const cs=Math.cos(rot),sn=Math.sin(rot);
         // local: translate(-base) -> scale -> rotate -> translate(ins)
@@ -618,6 +622,10 @@ function dwgFlatten(ents,blocks,tf,out,depth){
       case 'ARC':{let a0=ANG(e.startAngle),a1=ANG(e.endAngle);if(mir){[a0,a1]=[Math.PI-a1,Math.PI-a0]}out.push({k:'c',c:apP(e.center),r:(+e.radius||0)*sc,a0:a0+trot,a1:a1+trot});break}
       case 'TEXT':case 'ATTRIB':case 'ATTDEF':{const t=String(e.text||'');if(t)out.push({k:'t',p:apP(e.startPoint||e.insertionPoint),h:(+e.textHeight||2.5)*sc,s:t,rot:ANG(e.rotation)+trot});break}
       case 'MTEXT':{const t=String(e.text||'').replace(/\\P/g,' ').replace(/\\[A-Za-z][^;]*;/g,'').replace(/[{}]/g,'');let rot=ANG(e.rotation);if(e.direction&&(e.direction.x||e.direction.y))rot=Math.atan2(e.direction.y,e.direction.x);if(t)out.push({k:'t',p:apP(e.insertionPoint),h:(+e.textHeight||2.5)*sc,s:t,rot:rot+trot});break}
+      case 'DIMENSION':{const b=e.name&&blocks.get(e.name);if(b&&depth<=5&&(b.entities||[]).length){dwgFlatten(b.entities,blocks,tf,out,depth+1);break}
+        const m=+e.measurement;let t=e.text;if(!t||t==='<>')t=isFinite(m)&&m?String(Math.round(m)):'';else t=String(t).replace(/<>/,isFinite(m)?String(Math.round(m)):'').replace(/\\[A-Za-z][^;]*;/g,'');
+        if(t&&t.trim()&&e.textPoint)out.push({k:'t',p:apP(e.textPoint),h:250*sc,s:t,rot:ANG(e.textRotation)+trot});
+        if(e.subDefinitionPoint1&&e.subDefinitionPoint2)out.push({k:'l',p:[apP(e.subDefinitionPoint1),apP(e.subDefinitionPoint2)]});break}
       case 'INSERT':{if(depth>5)break;const b=blocks.get(e.name);if(!b)break;const sx=+(e.xScale??1)||1,sy=+(e.yScale??1)||1,rot=ANG(e.rotation);const ip=P2(e.insertionPoint),bp=P2(b.basePoint);
         const cs=Math.cos(rot),sn=Math.sin(rot);const m=[cs*sx,sn*sx,-sn*sy,cs*sy,0,0];m[4]=ip[0]-(m[0]*bp[0]+m[2]*bp[1]);m[5]=ip[1]-(m[1]*bp[0]+m[3]*bp[1]);
         const nt=[tf[0]*m[0]+tf[2]*m[1],tf[1]*m[0]+tf[3]*m[1],tf[0]*m[2]+tf[2]*m[3],tf[1]*m[2]+tf[3]*m[3],tf[0]*m[4]+tf[2]*m[5]+tf[4],tf[1]*m[4]+tf[3]*m[5]+tf[5]];
@@ -1056,7 +1064,7 @@ async function zoneOCR(z){const bg=BG[z.sheetId];const xs=z.pts.map(p=>p[0]),ys=
 const PTXT={};
 async function sheetTokens(sh){const F=FILES[sh.fileId];if(!F)return null;if(F.kind==='dxf'||F.kind==='dwg')return DXFTXT[sh.id]||[];
   if(F.kind==='pdf'&&typeof pdfjsLib!=='undefined'){if(!PTXT[sh.id])PTXT[sh.id]=await pdfTokens(F,sh.page,sh.pdfScale||1);return PTXT[sh.id]}return null}
-const KIND_TYPES={poly:['슬래브','기초','계단','기타'],line:['보','벽체','기타'],count:['기둥','기초','기타']};
+const KIND_TYPES={poly:['슬래브','기초','계단','기타','벽체','기둥','보'],line:['보','벽체','기타'],count:['기둥','기초','기타']};
 const tc=t=>[t.x+t.w/2,t.y+t.h/2];
 async function autoCode(s){const sh=S.sheets.find(x=>x.id===s.sheetId);if(!sh)return;let toks=null;try{toks=await sheetTokens(sh)}catch(e){logErr('부호 인식',e)}
   const okT=KIND_TYPES[s.kind];const cur=libOf(s.code);const curOk=cur&&okT.includes(cur.type);
@@ -1075,17 +1083,38 @@ async function autoCode(s){const sh=S.sheets.find(x=>x.id===s.sheetId);if(!sh)re
   let sel;if(s.kind==='poly')sel=toks.filter(t=>inPoly(tc(t),s.pts));
   else{const tol=Math.max(25/view.z,900/mm);sel=toks.filter(t=>{const c=tc(t);for(let i=1;i<s.pts.length;i++)if(segD(c,s.pts[i-1],s.pts[i])<tol)return true;return false})}
   const hits=matchCodes(sel,s.floor).filter(filt);
+  if(!hits.length){const unk=unknownWords(sel);if(unk.length&&!(s.kind==='poly'&&cur&&['벽체','보','기둥'].includes(cur.type)&&false)){askCode(s,[],`'${unk[0]}' 부호가 일람표에 없어요.`,unk[0]);return}}
   const byW=new Map();for(const h of hits)(byW.get(h.word)||byW.set(h.word,[]).get(h.word)).push(h);
   const cands=[...byW.values()].sort((a,b)=>b[0].n-a[0].n);
-  if(cands.length===1&&cands[0].length===1){const l=cands[0][0].l;if(s.code!==l.code){s.code=l.code;S.cur.code=l.code;refreshDraw();save();toast(`부호 자동 인식: ${l.code} (${l.type} ${dimStr(l)})`)}return}
-  if(!cands.length){if(!curOk)askCode(s,[],`구획 안에서 ${okT.slice(0,2).join('·')} 부호를 찾지 못했어요.`);return}
+  if(cands.length===1&&cands[0].length===1){const h=cands[0][0],l=h.l;if(s.kind==='poly'){await applyPoly(s,l,h);return}if(s.code!==l.code){s.code=l.code;S.cur.code=l.code;refreshDraw();save();toast(`부호 자동 인식: ${l.code} (${l.type} ${dimStr(l)})`)}return}
+  if(!cands.length){if(s.kind==='poly'&&cur&&['벽체','보','기둥'].includes(cur.type)){await applyPoly(s,cur,null);return}if(!curOk)askCode(s,[],`구획 안에서 ${okT.slice(0,2).join('·')} 부호를 찾지 못했어요.`);return}
   askCode(s,cands.flat(),cands.length>1?'구획 안에 부호가 여러 개 있어요.':'같은 부호에 일람표 항목이 여러 개예요.')}
-function askCode(s,hs,why){const okT=KIND_TYPES[s.kind];const L=libFor(s.floor).filter(l=>okT.includes(l.type));
+function askCode(s,hs,why,unk){const okT=KIND_TYPES[s.kind];const L=libFor(s.floor).filter(l=>okT.includes(l.type));
   const opts=hs.map((h,i)=>`<label class="zm"><input type="radio" name="qc" value="${esc(h.l.code)}" ${i===0?'checked':''}><span class="sw" style="background:${TCOLOR[h.l.type]}"></span><b>${esc(h.l.code)}</b><span class="note">${esc(h.l.type)} · ${esc(dimStr(h.l))} · 도면 ${h.n}곳</span></label>`).join('');
   modal('이 구획의 부재는?',`<style>.zm{display:flex;align-items:center;gap:6px;padding:6px 2px;font-size:14px;flex-wrap:wrap;border-bottom:1px solid var(--line)}.zm .sw{width:10px;height:10px;border-radius:2px}.zm input{width:auto}</style>
     <p class="note">${esc(why)} ${s.kind==='poly'?'면적 구획은 슬래브·기초 두께로 계산해요.':s.kind==='line'?'길이 구획은 보·벽체로 계산해요.':'개수 구획은 기둥으로 계산해요.'}</p>${opts}
-    <div class="field" style="margin-top:8px"><label>${hs.length?'목록에 없으면 직접 고르기':'일람표에서 고르기'}</label><select id="qcSel"><option value="">${hs.length?'(위에서 고름)':'선택…'}</option>${L.map(l=>`<option value="${esc(l.code)}" ${!hs.length&&l.code===s.code?'selected':''}>${esc(l.code)} · ${esc(l.type)} · ${esc(dimStr(l))}</option>`).join('')}</select></div>`,
-    b=>{const v=b.querySelector('#qcSel').value||(b.querySelector('input[name=qc]:checked')||{}).value;if(!v)return false;s.code=v;S.cur.code=v;refreshDraw();save()})}
+    ${unk?`<div class="field" style="margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:8px"><label><b>${esc(unk)}</b>을(를) 일람표에 추가 <span class="note">(도면 일람표 값을 넣어주세요)</span></label><div class="zm" style="border:0"><select id="uT" style="width:auto">${TYPES.map(t=>`<option ${t===codeType(unk)?'selected':''}>${t}</option>`).join('')}</select><input id="uB" type="number" placeholder="B" style="width:70px"><input id="uH" type="number" placeholder="H" style="width:70px"><input id="uTk" type="number" placeholder="두께 T" style="width:80px"></div><p class="note">벽체·슬래브는 두께(T), 기둥·보는 B·H를 넣으세요.</p></div>`:''}
+    <div class="field" style="margin-top:8px"><label>${hs.length?'목록에 없으면 직접 고르기':unk?'또는 일람표에서 고르기':'일람표에서 고르기'}</label><select id="qcSel"><option value="">${hs.length?'(위에서 고름)':'선택…'}</option>${L.map(l=>`<option value="${esc(l.code)}" ${!hs.length&&!unk&&l.code===s.code?'selected':''}>${esc(l.code)} · ${esc(l.type)} · ${esc(dimStr(l))}</option>`).join('')}</select></div>`,
+    b=>{let v='';
+      if(unk){const g=id=>+(b.querySelector(id)||{}).value||0;const B=g('#uB'),H=g('#uH'),T=g('#uTk');if(B||H||T){const it={code:unk,type:b.querySelector('#uT').value,B,H,T,note:'구획에서 추가'};S.lib.push(it);v=unk;renderLib()}}
+      if(!v)v=b.querySelector('#qcSel').value||(b.querySelector('input[name=qc]:checked')||{}).value;
+      if(!v)return false;const l=libOf(v);if(s.kind==='poly'&&l){const h=hs.find(x=>x.l.code===v);setTimeout(()=>applyPoly(s,l,h),30);return}s.code=v;S.cur.code=v;refreshDraw();save()})}
+function unknownWords(toks){const pf=new Set(['C','G','B','W','S','CW','BW','DW','SW','RW','TG','SG','SB','DS','WG','CG','F','MF','SC','SRC','TC','RG','GB']);S.lib.forEach(l=>{const m=codeBase(l.code).match(/^[A-Z]+/);if(m)pf.add(m[0])});
+  const c=new Map();for(const t of toks)for(const w of (String(t.s).toUpperCase().match(/\b[A-Z]{1,4}\d{1,4}[A-Z]{0,2}\b/g)||[])){const p=w.match(/^[A-Z]+/)[0];if(pf.has(p)&&!libOf(w))c.set(w,(c.get(w)||0)+1)}
+  return [...c.entries()].sort((a,b)=>b[1]-a[1]).map(x=>x[0])}
+/* 사각·다각 구획 안의 부재가 벽체·보·기둥이면 그에 맞게 바꿔서 계산 */
+async function applyPoly(s,l,h){const sh=S.sheets.find(x=>x.id===s.sheetId);const mmpx=(sh&&sh.scale)||1;const idx=S.shapes.indexOf(s);S.cur.code=l.code;
+  if(l.type==='벽체'||l.type==='보'){const w=l.type==='벽체'?(+l.T||+l.B):(+l.B);let res=[];if(w){let sg=null;try{sg=await zoneSegs(s)}catch(_){}
+      if(sg)res=pairLines(sg.filter(([a,b])=>inPoly([(a[0]+b[0])/2,(a[1]+b[1])/2],s.pts)),mmpx,[{w,ls:[l]}])}
+    let pieces=res.map(r=>({pts:r.pts,memo:`자동: 평행선 간격 ${Math.round(r.w)}mm`}));
+    if(!pieces.length){let best=null;for(let i=0;i<s.pts.length;i++){const a=s.pts[i],b=s.pts[(i+1)%s.pts.length];const d=Math.hypot(b[0]-a[0],b[1]-a[1]);if(!best||d>best.d)best={a,b,d}}
+      const c=centroid(s.pts);const ux=(best.b[0]-best.a[0])/best.d,uy=(best.b[1]-best.a[1])/best.d;const half=best.d/2;pieces=[{pts:[[c[0]-ux*half,c[1]-uy*half],[c[0]+ux*half,c[1]+uy*half]],memo:'구획의 긴 변 길이'}]}
+    const ns=pieces.map(p=>({...s,id:uid(),kind:'line',pts:p.pts,code:l.code,memo:p.memo}));S.shapes.splice(idx,1,...ns);selId=ns[0].id;
+    const len=ns.reduce((a,x)=>a+calc(x).g.q,0);refreshDraw();save();toast(`${l.code} ${l.type} 인식 · 길이 ${fmt(len,2)}m (${pieces[0].memo.startsWith('자동')?'도면 선':'구획 긴 변'}) · ${fmt(ns.reduce((a,x)=>a+calc(x).vol,0),2)} m³`);return}
+  if(l.type==='기둥'){let pts=(h&&h.pts||[]).filter(p=>inPoly(p,s.pts));if(!pts.length)pts=[centroid(s.pts)];let sg=null;try{sg=await zoneSegs(s)}catch(_){}
+    if(sg&&l.B)pts=pts.map(p=>snapCol(sg,p,(+l.B)/mmpx,(+l.H||+l.B)/mmpx)||p);
+    const ns={...s,id:uid(),kind:'count',pts,code:l.code};S.shapes.splice(idx,1,ns);selId=ns.id;refreshDraw();save();toast(`${l.code} 기둥 ${pts.length}개 인식 · ${fmt(calc(ns).vol,2)} m³`);return}
+  s.code=l.code;refreshDraw();save();toast(`부호 자동 인식: ${l.code} (${l.type} ${dimStr(l)})`)}
 /* 타설 구획 안의 도면 글자에서 일람표 부호 찾기 */
 async function zoneTokens(z){const sh=S.sheets.find(x=>x.id===z.sheetId);const F=sh&&FILES[sh.fileId];if(!F)return [];
   const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
@@ -1168,6 +1197,8 @@ function renderLib(){
     else l[k]=['B','H','T','As'].includes(k)?(+el.value||0):el.value;save();renderCur();draw()});
   $$('#libTbl [data-ld]').forEach(b=>b.onclick=()=>{const l=S.lib[+b.dataset.ld];if(used[l.code]){toast(`'${l.code}'는 구획 ${used[l.code]}개에서 사용 중이에요`);return}S.lib.splice(+b.dataset.ld,1);renderLib();renderCur();save()});
 }
+$('#libJunk').onclick=()=>{const bad=S.lib.filter(l=>!/[A-Za-z가-힣]/.test(codeBase(l.code))||(!l.B&&!l.H&&!l.T&&!l.As));if(!bad.length){toast('정리할 부호가 없어요');return}
+  modal('잘못 읽힌 부호 정리',`<p>아래 ${bad.length}개를 지울까요? (글자가 없는 부호이거나 치수가 하나도 없는 항목)</p><p class="note" style="max-height:40vh;overflow:auto">${bad.map(l=>esc(l.code)+' · '+esc(l.type)).join('<br>')}</p>`,()=>{const set=new Set(bad);S.lib=S.lib.filter(l=>!set.has(l));renderLib();renderCur();save();toast(`${bad.length}개 지웠어요`)})};
 $('#libAdd').onclick=()=>{let n=1;while(S.lib.some(l=>l.code==='NEW'+n))n++;S.lib.push({code:'NEW'+n,type:'기타',B:0,H:0,T:0,note:''});renderLib();renderCur();save()};
 function typeOf(s){s=String(s||'').trim();if(TYPES.includes(s))return s;if(/기초|footing|매트/i.test(s))return '기초';if(/기둥|column/i.test(s))return '기둥';if(/보|beam|girder/i.test(s))return '보';if(/슬래브|slab/i.test(s))return '슬래브';if(/벽|wall/i.test(s))return '벽체';if(/계단|stair/i.test(s))return '계단';return codeType(s)}
 function importRows(rows){
@@ -1314,6 +1345,7 @@ function codeType(code){
   if(!L)return '기타';
   if(/^(F|MF|MAT|PF|WF|IF|CF)/.test(L))return '기초';
   if(L.includes('G')||/B$/.test(L))return '보';
+  if(/^(W|RW|CW|SW|EW|BW|DW)\d*$/.test(L)||/^(CW|BW|DW|RW|EW)/.test(L))return '벽체';
   if(/^(C|SC|RC|PC)$/.test(L)||/^C/.test(L))return '기둥';
   if(/^(S|FS|DS|RS)/.test(L))return '슬래브';
   if(/^(W|RW|CW|SW|EW|BW)/.test(L))return '벽체';
@@ -1503,7 +1535,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13h';const ERRLOG=[];
+const APP_VER='2026.11.14';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
