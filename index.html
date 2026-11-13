@@ -751,7 +751,7 @@ function centroid(p){let x=0,y=0;p.forEach(q=>{x+=q[0];y+=q[1]});return [x/p.len
 function midOf(p){if(p.length<2)return p[0];const tot=polyLen(p);let acc=0;for(let i=1;i<p.length;i++){const d=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);if(acc+d>=tot/2){const t=(tot/2-acc)/d;return [p[i-1][0]+(p[i][0]-p[i-1][0])*t,p[i-1][1]+(p[i][1]-p[i-1][1])*t]}acc+=d}return p[0]}
 
 /* ---------- 도구 ---------- */
-const HINT={select:'구획 클릭: 선택 · 꼭짓점 드래그: 수정 · Delete: 삭제 · 빈 곳 드래그: 화면 이동',rect:'드래그해서 사각 면적 구획',poly:'클릭으로 꼭짓점 추가 · 더블클릭/Enter: 완료 · Esc: 취소',line:'클릭으로 점 추가 · 더블클릭/Enter: 완료 (연속선 가능)',count:'부재 위치를 클릭해서 개수 세기 · Enter: 묶음 완료',scale:'도면에서 치수를 아는 두 점을 클릭하세요',ocr:'도면의 일람표 부분을 드래그해서 감싸면 부호·치수를 읽어요',zone:'타설 구획 영역을 한 번 드래그하세요 — 안에 있는 물량 구획에 자동으로 지정돼요'};
+const HINT={select:'구획 클릭: 선택 · 꼭짓점 드래그: 수정 · Delete: 삭제 · 빈 곳 드래그: 화면 이동',rect:'드래그해서 사각 면적 구획',poly:'클릭으로 꼭짓점 추가 · 더블클릭/Enter: 완료 · Esc: 취소',line:'클릭으로 점 추가 · 더블클릭/Enter: 완료 (연속선 가능)',count:'부재 위치를 클릭해서 개수 세기 · Enter: 묶음 완료',scale:'도면에서 치수를 아는 두 점을 클릭하세요',ocr:'도면의 일람표 부분을 드래그해서 감싸면 부호·치수를 읽어요',zone:'타설 구획 영역을 한 번 드래그하세요 — 층·부재를 자동으로 인식하고, 모르는 것만 물어봐요'};
 function setTool(t){finishDraft();tool=t;$$('#toolbar [data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));setHint(hintFor(t));cv.style.cursor=t==='select'?'default':'crosshair'}
 const HINT_T={select:'구획 탭: 선택 · 두 손가락: 확대/이동 · 꼭짓점 끌기: 수정',rect:'손가락으로 끌어서 사각 구획 · 두 손가락: 확대/이동',poly:'꼭짓점을 차례로 탭 → [완료]',line:'시작점·끝점(꺾이는 점)을 탭 → [완료]',count:'부재 위치를 탭해서 개수 세기 → [완료]',scale:'치수를 아는 두 점을 탭하세요',ocr:'일람표 부분을 손가락으로 끌어 감싸세요',zone:'타설 구획 영역을 손가락으로 한 번 끌어 감싸세요'};
 function hintFor(t){return (isMobile()||isTouch?HINT_T:HINT)[t]}
@@ -870,10 +870,61 @@ function applyZones(sheetId){let n=0;for(const s of S.shapes.filter(x=>x.sheetId
   else if(s.zoneAuto){s.zone='';s.zoneAuto=false;n++}}return n}
 function nextZoneName(){const used=new Set(S.zones.map(z=>z.name));const last=S.zones.length?S.zones[S.zones.length-1].name:'';const m=last.match(/^(\D*)(\d+)(.*)$/);
   if(m){let i=+m[2]+1;while(used.has(m[1]+i+m[3]))i++;return m[1]+i+m[3]}let i=1;while(used.has(i+'구획'))i++;return i+'구획'}
-function newZone(P){const sh=curSheet();if(!sh)return;const names=[...new Set(S.zones.map(z=>z.name))];
-  modal('타설 구획 이름',`<div class="field"><label>구획 이름</label><input id="zName" list="zoneNames" value="${esc(nextZoneName())}" placeholder="예: 1공구, B1F-A"></div><div class="field"><label>층</label><select id="zFloor">${floorOpts(S.cur.floor)}</select></div><datalist id="zoneNames">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
-   <p class="note">영역 안에 있는 물량 구획(가운데 점 기준)에 이 이름이 자동으로 들어가요. 이후 이 영역 안에 그리는 구획도 자동 지정돼요. 같은 이름을 쓰면 여러 도면·영역을 한 구획으로 묶을 수 있어요.</p>`,
-   b=>{const nm=b.querySelector('#zName').value.trim();if(!nm)return false;const fl=b.querySelector('#zFloor').value;const z={id:uid(),sheetId:sh.id,name:nm,pts:P,floor:fl,codes:[]};S.zones.push(z);applyZones(sh.id);S.cur.zone=nm;S.cur.floor=fl;refreshDraw();save();setTimeout(()=>pickZoneMembers(z),60)})}
+/* 도면 제목·글자에서 층 찾기 (예: '지하1층 구조평면도', 'B1F', '3F PLAN') */
+function floorFromText(str){str=String(str||'').toUpperCase().replace(/\s+/g,'');let m;
+  if(m=str.match(/지하(\d+)층/))return 'B'+m[1]+'F';if(m=str.match(/(?:^|[^A-Z0-9])B(\d{1,2})F?(?:층|FL|[^0-9A-Z]|$)/))return 'B'+m[1]+'F';
+  if(/지붕층|ROOF|(?:^|[^A-Z])RF(?:[^A-Z]|$)/.test(str))return 'RF';if(m=str.match(/옥탑(\d*)층|PH(\d*)F?/))return 'PH'+(m[1]||m[2]||'1')+'F';
+  if(m=str.match(/(?:^|[^0-9A-Z~-])(\d{1,2})(?:층|F(?:L|LOOR)?)(?:[^0-9A-Z]|$)/))return m[1]+'F';return null}
+function guessFloor(sh){const c=new Map();const add=(f,w)=>{if(f)c.set(f,(c.get(f)||0)+w)};
+  add(floorFromText(sh.name),5);
+  for(const t of (DXFTXT[sh.id]||[])){const x=String(t.s);if(/평면|PLAN|층\s*구조|FLOOR/i.test(x))add(floorFromText(x),3)}
+  const r=[...c.entries()].sort((a,b)=>b[1]-a[1]);if(!r.length)return {f:null,sure:false};
+  return {f:r[0][0],sure:r.length===1||r[0][1]>=2*r[1][1]}}
+function floorName(f){const hit=S.floors.find(x=>normF(x.name)===normF(f));if(hit)return hit.name;
+  S.floors.push({name:f,h:/^B/.test(f)?4500:3600});S.floors.sort((a,b)=>(fRank(a.name)??0)-(fRank(b.name)??0));return f}
+/* 타설 구획: 드래그 → 이름·층·부재 자동 인식, 모르는 것만 묻기 */
+async function newZone(P){const sh=curSheet();if(!sh)return;
+  const g=guessFloor(sh);const z={id:uid(),sheetId:sh.id,name:nextZoneName(),pts:P,floor:g.f?floorName(g.f):S.cur.floor,codes:[]};
+  S.zones.push(z);applyZones(sh.id);S.cur.zone=z.name;S.cur.floor=z.floor;refreshDraw();save();
+  await autoZone(z,{floorUnsure:!g.f||!g.sure})}
+async function autoZone(z,opt={}){
+  let toks=null;try{busy('구획 안의 부재 찾는 중…');toks=await zoneTokens(z)}catch(e){logErr('구획 부재 찾기',e)}finally{busy(null)}
+  if(toks===null&&opt.ocr){try{toks=await zoneOCR(z)}catch(e){toast(errMsg(e));toks=[]}}
+  const hits=toks?matchCodes(toks,z.floor):[];
+  // 같은 글자에 일람표 항목이 여러 개면(두께별 벽, 층 구간 겹침) 질문
+  const byWord=new Map();for(const h of hits){const k=h.word;(byWord.get(k)||byWord.set(k,[]).get(k)).push(h)}
+  const sure=[],ask=[];for(const [w,hs] of byWord){if(hs.length===1)sure.push(hs[0]);else ask.push({w,hs})}
+  // 일람표에 없는 부호처럼 보이는 글자
+  const prefixes=new Set(S.lib.map(l=>(codeBase(l.code).match(/^[A-Z]+/)||[''])[0]).filter(Boolean));
+  const unknown=new Map();if(toks)for(const t of toks)for(const w of (String(t.s).toUpperCase().match(/[A-Z]{1,4}\d{1,4}[A-Z]{0,2}/g)||[])){const pf=w.match(/^[A-Z]+/)[0];if(!prefixes.has(pf)||byWord.has(w)||hits.some(h=>h.word===w))continue;unknown.set(w,(unknown.get(w)||0)+1)}
+  const apply=(chosen,newItems)=>{for(const it of newItems){S.lib.push(it);chosen.push({l:it,n:0,pts:[]})}
+    z.codes=[...new Set([...(z.codes||[]),...chosen.map(h=>h.l.code)])];let made=0;
+    for(const h of chosen){if(h.l.type!=='기둥'||!h.pts.length)continue;if(S.shapes.some(s=>s.sheetId===z.sheetId&&s.zone===z.name&&s.kind==='count'&&s.code===h.l.code))continue;
+      S.shapes.push({id:uid(),sheetId:z.sheetId,kind:'count',pts:h.pts,code:h.l.code,floor:z.floor,zone:z.name,zoneAuto:true,mult:1,adj:0,h:0,memo:'자동 인식'});made+=h.pts.length}
+    S.cur.zone=z.name;S.cur.floor=z.floor;if(z.codes.length&&!z.codes.includes(S.cur.code)){const nc=z.codes.find(c=>{const l=libOf(c);return l&&l.type!=='기둥'})||z.codes[0];S.cur.code=nc}
+    refreshDraw();save();
+    toast(`${z.name} (${z.floor}) · 부재 ${z.codes.length}개 인식${made?` · 기둥 ${made}개 자동 입력`:''}${z.codes.length?'':' — [부재]로 직접 추가하세요'}`)};
+  const needOCR=toks===null&&!opt.ocr;
+  if(!ask.length&&!unknown.size&&!opt.floorUnsure&&!needOCR){apply(sure,[]);return}
+  // ---- 모르는 것만 묻기
+  const qs=[];
+  if(opt.floorUnsure)qs.push(`<div class="field"><label>이 구획은 몇 층인가요? <span class="note">(도면 제목에서 층을 확실히 찾지 못했어요)</span></label><select id="qFloor">${floorOpts(z.floor)}</select></div>`);
+  if(needOCR)qs.push(`<div class="field"><label>사진 도면이라 글자를 바로 읽을 수 없어요. 글자 인식으로 부재를 찾을까요?</label><label class="zm"><input type="checkbox" id="qOcr" checked> 글자 인식 실행 (몇 초 걸려요)</label></div>`);
+  ask.forEach((a,i)=>qs.push(`<div class="field"><label>도면의 <b>${esc(a.w)}</b> (${a.hs[0].n}곳)는 일람표에서 어느 것인가요? <span class="note">여러 개 골라도 돼요</span></label>${a.hs.map((h,k)=>`<label class="zm"><input type="checkbox" data-ask="${i}" data-k="${k}" ${k===0?'checked':''}><span class="sw" style="background:${TCOLOR[h.l.type]}"></span><b>${esc(h.l.code)}</b><span class="note">${esc(h.l.type)} · ${esc(dimStr(h.l))}</span></label>`).join('')}</div>`));
+  if(unknown.size)qs.push(`<div class="field"><label>도면에 있지만 일람표에 없는 부호예요. 쓸 것만 크기를 넣어 추가하세요 <span class="note">(비워두면 무시)</span></label>${[...unknown].slice(0,12).map(([w,n])=>`<div class="zm" data-unk="${esc(w)}"><b style="min-width:56px">${esc(w)}</b><span class="note">${n}곳</span><select data-f="type" style="width:auto">${TYPES.map(t=>`<option ${t===codeType(w)?'selected':''}>${t}</option>`).join('')}</select><input data-f="B" type="number" placeholder="B" style="width:64px"><input data-f="H" type="number" placeholder="H" style="width:64px"><input data-f="T" type="number" placeholder="T" style="width:64px"></div>`).join('')}</div>`);
+  modal(`${z.name} · 확인이 필요해요`,`<style>.zm{display:flex;align-items:center;gap:6px;padding:5px 2px;font-size:13px;flex-wrap:wrap}.zm .sw{width:10px;height:10px;border-radius:2px}.zm input[type=checkbox]{width:auto}</style>
+    <p class="note">${sure.length?`자동으로 찾은 부재 ${sure.length}개(${esc(sure.map(h=>h.l.code).slice(0,8).join(', '))}${sure.length>8?' …':''})는 바로 넣을게요. `:''}아래만 알려주세요.</p>
+    <div style="max-height:56vh;overflow:auto">${qs.join('<hr style="border:0;border-top:1px solid var(--line);margin:6px 0">')}</div>`,
+    b=>{const qf=b.querySelector('#qFloor');const floorChanged=qf&&qf.value!==z.floor;if(qf){z.floor=qf.value;S.shapes.forEach(s=>{if(s.sheetId===z.sheetId&&s.zone===z.name&&s.zoneAuto)s.floor=z.floor})}
+      const qo=b.querySelector('#qOcr');
+      if(floorChanged||(qo&&qo.checked)){setTimeout(()=>autoZone(z,{ocr:!!(qo&&qo.checked)}),50);return}
+      const chosen=[...sure];b.querySelectorAll('input[data-ask]:checked').forEach(i=>chosen.push(ask[+i.dataset.ask].hs[+i.dataset.k]));
+      const items=[];b.querySelectorAll('[data-unk]').forEach(r=>{const v=f=>+r.querySelector(`[data-f="${f}"]`).value||0;const B=v('B'),H=v('H'),T=v('T');if(!B&&!H&&!T)return;const code=r.dataset.unk;if(S.lib.some(l=>l.code===code))return;items.push({code,type:r.querySelector('[data-f="type"]').value,B,H,T,note:'구획 인식 중 추가'})});
+      apply(chosen,items)});
+  $('#mCancel').onclick=()=>{$('#modal').classList.remove('on');apply(sure,[])};
+}
+async function zoneOCR(z){const bg=BG[z.sheetId];const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.max(0,Math.min(...xs)),y0=Math.max(0,Math.min(...ys)),x1=Math.min(bg.width,Math.max(...xs)),y1=Math.min(bg.height,Math.max(...ys));
+  const sc=prepForOCR(bg,x0,y0,x1-x0,y1-y0);const f=sc.width/(x1-x0);busy('글자 인식 중…');try{return (await ocrTokens(sc)).map(t=>({...t,x:x0+t.x/f,y:y0+t.y/f,w:t.w/f,h:t.h/f}))}finally{busy(null)}}
 /* 타설 구획 안의 도면 글자에서 일람표 부호 찾기 */
 async function zoneTokens(z){const sh=S.sheets.find(x=>x.id===z.sheetId);const F=sh&&FILES[sh.fileId];if(!F)return [];
   const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
@@ -884,7 +935,7 @@ function matchCodes(toks,floor){const L=libFor(floor);const byBase=new Map();
   for(const l of L){const b=codeBase(l.code).toUpperCase();const k=b.replace(/-\d+$/,'');(byBase.get(k)||byBase.set(k,[]).get(k)).push(l);if(k!==b)(byBase.get(b)||byBase.set(b,[]).get(b)).push(l)}
   const hit=new Map();
   for(const t of toks){const words=String(t.s).toUpperCase().replace(/\s+/g,' ').match(/[A-Z]{1,5}\d{1,4}[A-Z]{0,2}(-\d+)?/g)||[];
-    for(const w of words){const ls=byBase.get(w)||byBase.get(w.replace(/-\d+$/,''));if(!ls)continue;for(const l of ls){const h=hit.get(l.code)||{l,n:0,pts:[]};h.n++;h.pts.push([t.x+t.w/2,t.y+t.h/2]);hit.set(l.code,h)}}}
+    for(const w of words){const ls=byBase.get(w)||byBase.get(w.replace(/-\d+$/,''));if(!ls)continue;for(const l of ls){const h=hit.get(l.code)||{l,n:0,pts:[],word:w.replace(/-\d+$/,'')};h.n++;h.pts.push([t.x+t.w/2,t.y+t.h/2]);hit.set(l.code,h)}}}
   return [...hit.values()].sort((a,b)=>TYPES.indexOf(a.l.type)-TYPES.indexOf(b.l.type)||a.l.code.localeCompare(b.l.code,'ko',{numeric:true}))}
 async function pickZoneMembers(z,ocr){
   let toks=null,how='';try{busy('구획 안의 부재 찾는 중…');toks=await zoneTokens(z);how=toks?'도면 글자':'';
@@ -1291,7 +1342,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13c';const ERRLOG=[];
+const APP_VER='2026.11.13d';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
