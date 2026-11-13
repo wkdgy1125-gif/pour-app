@@ -585,7 +585,7 @@ function drawOut(out,x0,y0,x1,y1){
   const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#222';g.fillStyle='#222';g.lineWidth=Math.max(1.5,Math.max(c.width,c.height)/1600);
   const T=p=>[(p[0]-x0)*k,(y1-p[1])*k];
   g.beginPath();for(const o of out){if(o.k==='l'){const a=T(o.p[0]);g.moveTo(a[0],a[1]);for(let j=1;j<o.p.length;j++){const b=T(o.p[j]);g.lineTo(b[0],b[1])}}else if(o.k==='c'){const a=T(o.c);g.moveTo(a[0]+o.r*k*Math.cos(-o.a0),a[1]+o.r*k*Math.sin(-o.a0));g.arc(a[0],a[1],o.r*k,-o.a0,-o.a1,true)}}g.stroke();
-  const texts=[];for(const o of out){if(o.k!=='t')continue;const a=T(o.p);const h=o.h*k;if(Math.abs(Math.sin(o.rot))<0.2){g.font=`${Math.max(h,1)}px sans-serif`;texts.push({s:o.s,x:a[0],y:a[1]-h,w:g.measureText(o.s).width,h})}if(h<2)continue;g.save();g.translate(a[0],a[1]);g.rotate(-o.rot);g.font=`${h}px sans-serif`;g.fillText(o.s,0,0);g.restore()}
+  const texts=[];for(const o of out){if(o.k!=='t')continue;const a=T(o.p);const h=o.h*k;g.font=`${Math.max(h,1)}px sans-serif`;const tw=g.measureText(o.s).width;if(Math.abs(Math.sin(o.rot))<0.2&&Math.cos(o.rot)>0)texts.push({s:o.s,x:a[0],y:a[1]-h,w:tw,h});else{const th=-o.rot,lx=tw/2,ly=-h/2;const cx=a[0]+lx*Math.cos(th)-ly*Math.sin(th),cy=a[1]+lx*Math.sin(th)+ly*Math.cos(th);texts.push({s:o.s,x:cx-tw/2,y:cy-h/2,w:tw,h,rot:o.rot})}if(h<2)continue;g.save();g.translate(a[0],a[1]);g.rotate(-o.rot);g.font=`${h}px sans-serif`;g.fillText(o.s,0,0);g.restore()}
   return {canvas:c,mmPerPx:1/k,texts};
 }
 
@@ -657,6 +657,7 @@ async function selectSheet(id){
   finally{busy(null);$('#sheetLoading').style.display='none'}
   if(S.activeSheet!==id)return;
   if(await maybeSplit(sh))return;
+  try{const g=guessFloor(sh);if(g.f&&g.sure){const fn=floorName(g.f);if(S.cur.floor!==fn){S.cur.floor=fn;const L=libFor(fn);if(!L.some(l=>l.code===S.cur.code)){const same=L.find(l=>codeBase(l.code)===codeBase(S.cur.code));if(same)S.cur.code=same.code}toast(`${sh.name.slice(0,24)} → 층 ${fn}`)}}}catch(_){}
   fit();refreshDraw();save();
   if(sh&&!sh.scale)setHint('먼저 [축척]으로 도면의 아는 치수 두 점을 찍어 축척을 맞춰주세요');
 }
@@ -879,7 +880,7 @@ function finishDraft(){
   if(d.scale){draw();return}
   const kind=d.kind==='rect'?'poly':d.kind;
   const need={poly:3,line:2,count:1}[kind];
-  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true;if(zz.floor)s.floor=zz.floor}S.shapes.push(s);selId=s.id;refreshDraw();save()}
+  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true;if(zz.floor)s.floor=zz.floor}S.shapes.push(s);selId=s.id;refreshDraw();save();autoCode(s)}
   else draw();
   if(tool!=='select')setHint(hintFor(tool));
 }
@@ -979,6 +980,40 @@ async function autoZone(z,opt={}){
 }
 async function zoneOCR(z){const bg=BG[z.sheetId];const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.max(0,Math.min(...xs)),y0=Math.max(0,Math.min(...ys)),x1=Math.min(bg.width,Math.max(...xs)),y1=Math.min(bg.height,Math.max(...ys));
   const sc=prepForOCR(bg,x0,y0,x1-x0,y1-y0);const f=sc.width/(x1-x0);busy('글자 인식 중…');try{return (await ocrTokens(sc)).map(t=>({...t,x:x0+t.x/f,y:y0+t.y/f,w:t.w/f,h:t.h/f}))}finally{busy(null)}}
+/* ---------- 그린 구획의 부호 자동 인식 ---------- */
+const PTXT={};
+async function sheetTokens(sh){const F=FILES[sh.fileId];if(!F)return null;if(F.kind==='dxf'||F.kind==='dwg')return DXFTXT[sh.id]||[];
+  if(F.kind==='pdf'&&typeof pdfjsLib!=='undefined'){if(!PTXT[sh.id])PTXT[sh.id]=await pdfTokens(F,sh.page,sh.pdfScale||1);return PTXT[sh.id]}return null}
+const KIND_TYPES={poly:['슬래브','기초','계단','기타'],line:['보','벽체','기타'],count:['기둥','기초','기타']};
+const tc=t=>[t.x+t.w/2,t.y+t.h/2];
+async function autoCode(s){const sh=S.sheets.find(x=>x.id===s.sheetId);if(!sh)return;let toks=null;try{toks=await sheetTokens(sh)}catch(e){logErr('부호 인식',e)}
+  const okT=KIND_TYPES[s.kind];const cur=libOf(s.code);const curOk=cur&&okT.includes(cur.type);
+  if(!toks||!toks.length){if(!curOk)askCode(s,[],'사진 도면은 부호를 자동으로 읽지 못해요.');return}
+  const mm=sh.scale||1;const filt=h=>okT.includes(h.l.type);
+  if(s.kind==='count'){const tol=Math.max(30/view.z,1500/mm);const near=toks.filter(t=>s.pts.some(p=>{const c=tc(t);return Math.hypot(c[0]-p[0],c[1]-p[1])<tol*1.5}));
+    const groups=new Map(),none=[];
+    for(const p of s.pts){let best=null;for(const t of near){const c=tc(t);const d=Math.hypot(c[0]-p[0],c[1]-p[1]);if(d>tol)continue;const hs=matchCodes([t],s.floor).filter(filt);if(hs.length===1&&(!best||d<best.d))best={d,code:hs[0].l.code}}
+      if(best)(groups.get(best.code)||groups.set(best.code,[]).get(best.code)).push(p);else none.push(p)}
+    if(!groups.size){if(!curOk)askCode(s,[],'기둥 옆에서 부호 글자를 찾지 못했어요.');return}
+    const codes=[...groups.keys()];const keepCur=none.length&&curOk;
+    s.code=codes[0];s.pts=groups.get(codes[0]).concat(keepCur?[]:none);
+    for(const c of codes.slice(1))S.shapes.push({...s,id:uid(),code:c,pts:groups.get(c)});
+    if(keepCur)S.shapes.push({...s,id:uid(),code:cur.code,pts:none});
+    S.cur.code=codes[0];refreshDraw();save();toast(`기둥 부호 자동 인식: ${codes.map(c=>`${c} ${groups.get(c).length}개`).join(', ')}${none.length?` · 부호 못 찾은 ${none.length}개는 ${keepCur?cur.code:codes[0]}로`:''}`);return}
+  let sel;if(s.kind==='poly')sel=toks.filter(t=>inPoly(tc(t),s.pts));
+  else{const tol=Math.max(25/view.z,900/mm);sel=toks.filter(t=>{const c=tc(t);for(let i=1;i<s.pts.length;i++)if(segD(c,s.pts[i-1],s.pts[i])<tol)return true;return false})}
+  const hits=matchCodes(sel,s.floor).filter(filt);
+  const byW=new Map();for(const h of hits)(byW.get(h.word)||byW.set(h.word,[]).get(h.word)).push(h);
+  const cands=[...byW.values()].sort((a,b)=>b[0].n-a[0].n);
+  if(cands.length===1&&cands[0].length===1){const l=cands[0][0].l;if(s.code!==l.code){s.code=l.code;S.cur.code=l.code;refreshDraw();save();toast(`부호 자동 인식: ${l.code} (${l.type} ${dimStr(l)})`)}return}
+  if(!cands.length){if(!curOk)askCode(s,[],`구획 안에서 ${okT.slice(0,2).join('·')} 부호를 찾지 못했어요.`);return}
+  askCode(s,cands.flat(),cands.length>1?'구획 안에 부호가 여러 개 있어요.':'같은 부호에 일람표 항목이 여러 개예요.')}
+function askCode(s,hs,why){const okT=KIND_TYPES[s.kind];const L=libFor(s.floor).filter(l=>okT.includes(l.type));
+  const opts=hs.map((h,i)=>`<label class="zm"><input type="radio" name="qc" value="${esc(h.l.code)}" ${i===0?'checked':''}><span class="sw" style="background:${TCOLOR[h.l.type]}"></span><b>${esc(h.l.code)}</b><span class="note">${esc(h.l.type)} · ${esc(dimStr(h.l))} · 도면 ${h.n}곳</span></label>`).join('');
+  modal('이 구획의 부재는?',`<style>.zm{display:flex;align-items:center;gap:6px;padding:6px 2px;font-size:14px;flex-wrap:wrap;border-bottom:1px solid var(--line)}.zm .sw{width:10px;height:10px;border-radius:2px}.zm input{width:auto}</style>
+    <p class="note">${esc(why)} ${s.kind==='poly'?'면적 구획은 슬래브·기초 두께로 계산해요.':s.kind==='line'?'길이 구획은 보·벽체로 계산해요.':'개수 구획은 기둥으로 계산해요.'}</p>${opts}
+    <div class="field" style="margin-top:8px"><label>${hs.length?'목록에 없으면 직접 고르기':'일람표에서 고르기'}</label><select id="qcSel"><option value="">${hs.length?'(위에서 고름)':'선택…'}</option>${L.map(l=>`<option value="${esc(l.code)}" ${!hs.length&&l.code===s.code?'selected':''}>${esc(l.code)} · ${esc(l.type)} · ${esc(dimStr(l))}</option>`).join('')}</select></div>`,
+    b=>{const v=b.querySelector('#qcSel').value||(b.querySelector('input[name=qc]:checked')||{}).value;if(!v)return false;s.code=v;S.cur.code=v;refreshDraw();save()})}
 /* 타설 구획 안의 도면 글자에서 일람표 부호 찾기 */
 async function zoneTokens(z){const sh=S.sheets.find(x=>x.id===z.sheetId);const F=sh&&FILES[sh.fileId];if(!F)return [];
   const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
@@ -1224,7 +1259,7 @@ function fixOCR(s){ // 흔한 OCR 오인식 보정
   return s.replace(/(?<=\d)[Oo](?=\d|\b)/g,'0').replace(/(?<=[A-Za-z])[lI|](?=\d|\b)/g,'1').replace(/(?<=\d)[lI|]/g,'1');
 }
 function buildLines(tokens){
-  const T=tokens.filter(t=>t&&String(t.s).trim()).map(t=>({...t,s:String(t.s),yc:t.y+t.h/2}));
+  const T=tokens.filter(t=>t&&!t.rot&&String(t.s).trim()).map(t=>({...t,s:String(t.s),yc:t.y+t.h/2}));
   T.sort((a,b)=>a.yc-b.yc);
   const lines=[];
   for(const t of T){
@@ -1396,7 +1431,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13e';const ERRLOG=[];
+const APP_VER='2026.11.13f';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
