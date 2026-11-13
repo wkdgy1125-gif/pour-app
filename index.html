@@ -443,12 +443,57 @@ async function handleFiles(list){
         if(!(await ensurePDF()))throw new Error('PDF 엔진을 불러오지 못했어요 (인터넷 연결 확인)');
         const doc=await pdfjsLib.getDocument({data:data.slice(0)}).promise;
         for(let p=1;p<=doc.numPages;p++){const sh=addSheet({fileId:fid,kind,page:p,name:f.name.replace(/\.pdf$/i,'')+(doc.numPages>1?` (${p}p)`:'')});if(!first)first=sh}
-      }else{const sh=addSheet({fileId:fid,kind,page:1,name:f.name.replace(/\.[^.]+$/,'')});if(!first)first=sh}
+      }else{const base=f.name.replace(/\.[^.]+$/,'');let parts=null;if(kind==='dxf'||kind==='dwg'){try{busy('도면 나누는 중…');parts=await splitCad(fid,base)}catch(e){logErr('도면 나누기',e)}finally{busy(null)}}
+        if(parts){for(const o of parts){const sh=addSheet(o);if(!first)first=sh}toast(`도면 ${parts.length}장을 찾아 한 장씩 나눴어요`)}else{const sh=addSheet({fileId:fid,kind,page:1,name:base,splitChk:true});if(!first)first=sh}}
     }catch(e){logErr('파일 열기',e);toast('열기 실패: '+errMsg(e))}
   }
   renderSheets();save();
   if(first)selectSheet(first.id);   // 새로 불러온 도면을 바로 화면에 표시
 }
+/* ---------- CAD 한 파일 안의 여러 도면(도곽) 나누기 ---------- */
+const OUTC={};
+async function cadOut(fid,F){if(OUTC[fid])return OUTC[fid];F=F||FILES[fid];const out=F.kind==='dwg'?await dwgOut(F.data):dxfOut(new TextDecoder(guessEnc(F.data)).decode(F.data));OUTC[fid]=out;return out}
+function findFrames(out){
+  const bs=out.map(oBox).filter(b=>isFinite(b[0])&&isFinite(b[3]));if(bs.length<4)return [];
+  const q=(A,f)=>A[Math.min(A.length-1,Math.max(0,Math.floor(A.length*f)))];
+  const X0=q(bs.map(b=>b[0]).sort((a,b)=>a-b),.002),X1=q(bs.map(b=>b[2]).sort((a,b)=>a-b),.998),Y0=q(bs.map(b=>b[1]).sort((a,b)=>a-b),.002),Y1=q(bs.map(b=>b[3]).sort((a,b)=>a-b),.998);
+  const W=X1-X0,H=Y1-Y0;if(!(W>0&&H>0))return [];
+  const sortF=fs=>{const th=Math.min(...fs.map(f=>f[3]-f[1]))*0.3;return fs.sort((a,b)=>Math.abs(b[3]-a[3])>th?b[3]-a[3]:a[0]-b[0])};
+  // 1) 닫힌 사각형 도곽(크기가 비슷한 것끼리)
+  const rects=[];for(const o of out){if(o.k!=='l'||o.p.length<4||o.p.length>5)continue;const P=o.p;if(P.length===5&&Math.hypot(P[4][0]-P[0][0],P[4][1]-P[0][1])>1e-6*W)continue;
+    let ok=true;for(let i=0;i<4;i++){const a=P[i],b=P[(i+1)%4];if(Math.abs(a[0]-b[0])>W*1e-4&&Math.abs(a[1]-b[1])>H*1e-4){ok=false;break}}if(!ok)continue;
+    const b=oBox(o);const w=b[2]-b[0],h=b[3]-b[1];if(w>W*0.08&&h>H*0.03&&w*h>W*H*0.01&&w*h<W*H*0.95)rects.push(b)}
+  const groups=[];for(const r of rects){const w=r[2]-r[0],h=r[3]-r[1];let g=groups.find(g=>Math.abs(g.w-w)<g.w*0.04&&Math.abs(g.h-h)<g.h*0.04);if(!g){g={w,h,rs:[]};groups.push(g)}g.rs.push(r)}
+  let best=null;for(const g of groups){let rs=g.rs.filter((r,i)=>!g.rs.some((o,j)=>j!==i&&o[0]<=r[0]+1e-6*W&&o[1]<=r[1]+1e-6*H&&o[2]>=r[2]-1e-6*W&&o[3]>=r[3]-1e-6*H&&((o[2]-o[0])*(o[3]-o[1])>(r[2]-r[0])*(r[3]-r[1])||j<i)));
+    if(rs.length<2)continue;const cov=rs.length*g.w*g.h;if(!best||cov>best.cov)best={rs,cov}}
+  if(best&&best.cov>W*H*0.35)return sortF(best.rs);
+  // 2) 빈 틈으로 나누기 (XY-cut)
+  const cut=(items,box,axis,depth)=>{const [a,b]=axis?[1,3]:[0,2];const span=box[b]-box[a];const iv=items.map(x=>[x[a],x[b]]).sort((p,q)=>p[0]-q[0]);
+    const parts=[];let cs=iv[0][0],ce=iv[0][1],cur=[];const gap=span*0.008;
+    const its=items.slice().sort((p,q)=>p[a]-q[a]);let grp=[its[0]];ce=its[0][b];
+    for(const it of its.slice(1)){if(it[a]>ce+gap){parts.push(grp);grp=[it];ce=it[b]}else{grp.push(it);if(it[b]>ce)ce=it[b]}}parts.push(grp);
+    const big=parts.filter(g=>g.length>=20);if(big.length<2)return depth<1?cut(items,box,1-axis,depth+1):[box];
+    const res=[];for(const g of big){const bb=[Math.min(...g.map(x=>x[0])),Math.min(...g.map(x=>x[1])),Math.max(...g.map(x=>x[2])),Math.max(...g.map(x=>x[3]))];res.push(...(depth<1?cut(g,bb,1-axis,depth+1):[bb]))}return res};
+  const core=bs.filter(b=>b[2]>=X0&&b[0]<=X1&&b[3]>=Y0&&b[1]<=Y1&&(b[2]-b[0])<W*0.9);
+  if(core.length>=40){let r=cut(core,[X0,Y0,X1,Y1],1,0);if(r.length<2)r=cut(core,[X0,Y0,X1,Y1],0,0);
+    const ar=f=>(f[2]-f[0])*(f[3]-f[1]);r=r.filter(f=>ar(f)>W*H*0.01);const mx=Math.max(...r.map(ar));r=r.filter(f=>ar(f)>=mx*0.3);if(r.length>=2)return sortF(r)}
+  // 3) 전체 폭/높이를 가로지르는 긴 선으로 나누기 (도곽이 붙어 있는 경우)
+  for(const ax of [1,0]){const cuts=[];for(const o of out){if(o.k!=='l')continue;for(let i=1;i<o.p.length;i++){const p=o.p[i-1],r=o.p[i];
+      if(ax===1&&Math.abs(p[1]-r[1])<H*1e-4&&Math.abs(p[0]-r[0])>W*0.85)cuts.push(p[1]);if(ax===0&&Math.abs(p[0]-r[0])<W*1e-4&&Math.abs(p[1]-r[1])>H*0.85)cuts.push(p[0])}}
+    cuts.sort((a,b)=>a-b);const L=ax?H:W;const pcs=[];for(let i=1;i<cuts.length;i++)if(cuts[i]-cuts[i-1]>L*0.06)pcs.push([cuts[i-1],cuts[i]]);
+    const paper=pcs.filter(([a,b])=>{const r=ax?W/(b-a):H/(b-a);const R=Math.max(r,1/r);return R>1.2&&R<1.65});
+    if(paper.length>=2&&paper.length>=pcs.length*0.7)return sortF(paper.map(([a,b])=>ax?[X0,a,X1,b]:[a,Y0,b,Y1]))}
+  return []}
+function frameTitle(out,f){const inF=o=>o.k==='t'&&o.p[0]>=f[0]&&o.p[0]<=f[2]&&o.p[1]>=f[1]&&o.p[1]<=f[3];const ts=out.filter(inF);
+  const no=ts.map(t=>String(t.s).match(/\b[A-Z]{1,3}\d{0,3}-\d{2,4}[A-Z]?\b/)).find(Boolean);
+  const tt=ts.filter(t=>/평면도|일람표|상세도|단면도|입면도|배근도|LIST|PLAN|DETAIL|SECTION/i.test(t.s)&&String(t.s).length<40).sort((a,b)=>b.h-a.h)[0];
+  return [no&&no[0],tt&&String(tt.s).replace(/\s+/g,' ').trim()].filter(Boolean).join(' ')}
+async function splitCad(fid,base){const F=FILES[fid];const out=await cadOut(fid,F);const fs=findFrames(out);if(fs.length<2)return null;
+  return fs.map((f,i)=>({fileId:fid,kind:F.kind,page:1,crop:f,name:(t=>t?`${t} · ${base}`:`${base} (${i+1})`)(frameTitle(out,f))}))}
+async function maybeSplit(sh){if(sh.crop||sh.splitChk||(sh.kind!=='dxf'&&sh.kind!=='dwg'))return false;sh.splitChk=true;
+  if(S.shapes.some(x=>x.sheetId===sh.id))return false;let parts=null;try{parts=await splitCad(sh.fileId,sh.name)}catch(e){logErr('도면 나누기',e)}if(!parts)return false;
+  const i=S.sheets.indexOf(sh);const ns=parts.map(o=>({id:uid(),scale:null,...o}));S.sheets.splice(i,1,...ns);delete BG[sh.id];S.zones=S.zones.filter(z=>z.sheetId!==sh.id);
+  toast(`한 파일 안의 도면 ${ns.length}장을 한 장씩 나눴어요 · ◀ ▶로 넘기세요`);save();selectSheet(ns[0].id);return true}
 function addSheet(o){const sh={id:uid(),scale:null,...o};S.sheets.push(sh);return sh}
 
 async function loadBG(sh){
@@ -472,7 +517,7 @@ async function loadBG(sh){
     BG[sh.id]=c; return c;
   }
   if(F.kind==='dxf'||F.kind==='dwg'){
-    const r=F.kind==='dwg'?await renderDWG(F.data):renderDXF(new TextDecoder(guessEnc(F.data)).decode(F.data));
+    const r=renderOut(await cadOut(sh.fileId,F),sh.crop);
     if(!r)throw new Error('도면에서 도형을 찾지 못했어요');
     if(!sh.scale){sh.scale=r.mmPerPx;save()}
     DXFTXT[sh.id]=r.texts;BG[sh.id]=r.canvas; return r.canvas;
@@ -520,14 +565,21 @@ function flatten(ents,blocks,tf,out,depth){
     }
   }
 }
-function renderDXF(txt){
-  const {ents,blocks}=parseDXF(txt);const out=[];flatten(ents,blocks,[1,0,0,1,0,0],out,0);return renderOut(out);
-}
-function renderOut(out){
+function dxfOut(txt){const {ents,blocks}=parseDXF(txt);const out=[];flatten(ents,blocks,[1,0,0,1,0,0],out,0);return out}
+function renderDXF(txt){return renderOut(dxfOut(txt))}
+function oBox(o){if(o.k==='l'){let a=1/0,b=1/0,c=-1/0,d=-1/0;for(const p of o.p){if(p[0]<a)a=p[0];if(p[0]>c)c=p[0];if(p[1]<b)b=p[1];if(p[1]>d)d=p[1]}return [a,b,c,d]}
+  if(o.k==='c')return [o.c[0]-o.r,o.c[1]-o.r,o.c[0]+o.r,o.c[1]+o.r];return [o.p[0],o.p[1],o.p[0]+String(o.s).length*o.h*0.75,o.p[1]+o.h]}
+function renderOut(out,crop){
+  if(crop){const [cx0,cy0,cx1,cy1]=crop;const pd=Math.max(cx1-cx0,cy1-cy0)*0.01;
+    out=out.filter(o=>{const b=oBox(o);return isFinite(b[0])&&b[2]>=cx0-pd&&b[0]<=cx1+pd&&b[3]>=cy0-pd&&b[1]<=cy1+pd&&!(b[0]<cx0-pd&&b[2]>cx1+pd&&b[1]<cy0-pd&&b[3]>cy1+pd)});
+    if(!out.length)return null;
+    const x0=cx0-pd,x1=cx1+pd,y0=cy0-pd,y1=cy1+pd;return drawOut(out,x0,y0,x1,y1)}
   const xs=[],ys=[];for(const o of out){if(o.k==='l')o.p.forEach(p=>{xs.push(p[0]);ys.push(p[1])});else if(o.k==='c'){xs.push(o.c[0]-o.r,o.c[0]+o.r);ys.push(o.c[1]-o.r,o.c[1]+o.r)}else{xs.push(o.p[0],o.p[0]+o.s.length*o.h*0.75);ys.push(o.p[1],o.p[1]+o.h)}}
   const ok=v=>isFinite(v);const X=xs.filter(ok).sort((a,b)=>a-b),Y=ys.filter(ok).sort((a,b)=>a-b);if(!X.length)return null;
   const q=(A,f)=>A[Math.min(A.length-1,Math.max(0,Math.floor(A.length*f)))];
   let x0=q(X,.002),x1=q(X,.998),y0=q(Y,.002),y1=q(Y,.998);const pad=Math.max(x1-x0,y1-y0)*.02;x0-=pad;x1+=pad;y0-=pad;y1+=pad;
+  return drawOut(out,x0,y0,x1,y1)}
+function drawOut(out,x0,y0,x1,y1){
   const k=fitScale(x1-x0,y1-y0,50);
   const c=document.createElement('canvas');c.width=Math.ceil((x1-x0)*k);c.height=Math.ceil((y1-y0)*k);
   const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#222';g.fillStyle='#222';g.lineWidth=Math.max(1.5,Math.max(c.width,c.height)/1600);
@@ -573,7 +625,7 @@ function dwgFlatten(ents,blocks,tf,out,depth){
     }}catch(_){}
   }
 }
-async function renderDWG(buf){
+async function dwgOut(buf){
   const {lib,T}=await getDWG();busy('DWG 읽는 중…');
   let ptr=null,db=null;
   try{ptr=lib.dwg_read_data(buf instanceof ArrayBuffer?buf.slice(0):buf,T.DWG??0);if(ptr==null)throw new Error('파일을 읽지 못했어요');db=lib.convert(ptr)}
@@ -582,8 +634,9 @@ async function renderDWG(buf){
   const blocks=new Map();for(const b of (db.tables&&db.tables.BLOCK_RECORD&&db.tables.BLOCK_RECORD.entries)||[])if(b&&b.name)blocks.set(b.name,b);
   let ents=db.entities||[];const model=ents.filter(e=>!e.isInPaperSpace);if(model.length)ents=model;
   const out=[];dwgFlatten(ents,blocks,[1,0,0,1,0,0],out,0);busy(null);
-  return renderOut(out);
+  return out;
 }
+async function renderDWG(buf){return renderOut(await dwgOut(buf))}
 
 /* ---------- 도면 목록 ---------- */
 function renderSheets(){
@@ -603,6 +656,7 @@ async function selectSheet(id){
   catch(e){logErr('도면 표시 ('+sh.kind+')',e);showSheetErr(sh,errMsg(e))}
   finally{busy(null);$('#sheetLoading').style.display='none'}
   if(S.activeSheet!==id)return;
+  if(await maybeSplit(sh))return;
   fit();refreshDraw();save();
   if(sh&&!sh.scale)setHint('먼저 [축척]으로 도면의 아는 치수 두 점을 찍어 축척을 맞춰주세요');
 }
@@ -1342,7 +1396,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13d';const ERRLOG=[];
+const APP_VER='2026.11.13e';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
