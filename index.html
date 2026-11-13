@@ -367,7 +367,7 @@ let S={
   cur:{code:'S1',floor:'1F',zone:''}, activeSheet:null
 };
 const FILES={};      // fileId -> {name, kind, data:ArrayBuffer}
-const BG={};const DXFTXT={};         // sheetId -> canvas/image
+const BG={};const DXFTXT={};const CADT={};         // sheetId -> canvas/image
 let view={x:0,y:0,z:1};
 let tool='select', draft=null, selId=null, drag=null;
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -381,7 +381,7 @@ function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 
 /* ---------- 모달 ---------- */
 function modal(title,html,onOk){
-  $('#mOk').textContent='확인';$('#mOk').style.display='';
+  $('#mOk').textContent='확인';$('#mOk').style.display='';$('#mCancel').style.display='';
   $('#mTitle').textContent=title;$('#mBody').innerHTML=html;$('#modal').classList.add('on');
   const f=$('#mBody').querySelector('input,textarea');if(f)setTimeout(()=>f.focus(),30);
   const close=()=>$('#modal').classList.remove('on');
@@ -520,7 +520,7 @@ async function loadBG(sh){
     const r=renderOut(await cadOut(sh.fileId,F),sh.crop);
     if(!r)throw new Error('도면에서 도형을 찾지 못했어요');
     if(!sh.scale){sh.scale=r.mmPerPx;save()}
-    DXFTXT[sh.id]=r.texts;BG[sh.id]=r.canvas; return r.canvas;
+    DXFTXT[sh.id]=r.texts;CADT[sh.id]=r.tf;BG[sh.id]=r.canvas; return r.canvas;
   }
 }
 function guessEnc(buf){const head=new TextDecoder('latin1').decode(buf.slice(0,4000));const m=head.match(/\$DWGCODEPAGE\s*\r?\n\s*3\s*\r?\n\s*(\S+)/);if(m&&/949|ANSI_949|KSC/i.test(m[1]))return 'euc-kr';return 'utf-8'}
@@ -586,7 +586,7 @@ function drawOut(out,x0,y0,x1,y1){
   const T=p=>[(p[0]-x0)*k,(y1-p[1])*k];
   g.beginPath();for(const o of out){if(o.k==='l'){const a=T(o.p[0]);g.moveTo(a[0],a[1]);for(let j=1;j<o.p.length;j++){const b=T(o.p[j]);g.lineTo(b[0],b[1])}}else if(o.k==='c'){const a=T(o.c);g.moveTo(a[0]+o.r*k*Math.cos(-o.a0),a[1]+o.r*k*Math.sin(-o.a0));g.arc(a[0],a[1],o.r*k,-o.a0,-o.a1,true)}}g.stroke();
   const texts=[];for(const o of out){if(o.k!=='t')continue;const a=T(o.p);const h=o.h*k;g.font=`${Math.max(h,1)}px sans-serif`;const tw=g.measureText(o.s).width;if(Math.abs(Math.sin(o.rot))<0.2&&Math.cos(o.rot)>0)texts.push({s:o.s,x:a[0],y:a[1]-h,w:tw,h});else{const th=-o.rot,lx=tw/2,ly=-h/2;const cx=a[0]+lx*Math.cos(th)-ly*Math.sin(th),cy=a[1]+lx*Math.sin(th)+ly*Math.cos(th);texts.push({s:o.s,x:cx-tw/2,y:cy-h/2,w:tw,h,rot:o.rot})}if(h<2)continue;g.save();g.translate(a[0],a[1]);g.rotate(-o.rot);g.font=`${h}px sans-serif`;g.fillText(o.s,0,0);g.restore()}
-  return {canvas:c,mmPerPx:1/k,texts};
+  return {canvas:c,mmPerPx:1/k,texts,tf:{x0,y1,k}};
 }
 
 
@@ -940,8 +940,80 @@ function floorName(f){const hit=S.floors.find(x=>normF(x.name)===normF(f));if(hi
 /* 타설 구획: 드래그 → 이름·층·부재 자동 인식, 모르는 것만 묻기 */
 async function newZone(P){const sh=curSheet();if(!sh)return;
   const g=guessFloor(sh);const z={id:uid(),sheetId:sh.id,name:nextZoneName(),pts:P,floor:g.f?floorName(g.f):S.cur.floor,codes:[]};
-  S.zones.push(z);applyZones(sh.id);S.cur.zone=z.name;S.cur.floor=z.floor;refreshDraw();save();
-  await autoZone(z,{floorUnsure:!g.f||!g.sure})}
+  S.zones.push(z);applyZones(sh.id);S.cur.zone=z.name;S.cur.floor=z.floor;refreshDraw();save();askTakeoff(z,true)}
+const TK_TYPES=['기둥','벽체','슬래브','보'];
+function askTakeoff(z,isNew){const last=S.set.tkTypes||['벽체','슬래브'];
+  modal(`${z.name} · 무엇을 뽑을까요?`,`<style>.tk{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px}.tk label{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:15px;font-weight:600}.tk input{width:auto;transform:scale(1.2)}</style>
+   <div class="tk">${TK_TYPES.map(t=>`<label><input type="checkbox" data-tk="${t}" ${last.includes(t)?'checked':''}><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${TCOLOR[t]}"></span>${t}</label>`).join('')}</div>
+   <div class="row2"><div class="field"><label>구획 이름</label><input id="tkName" value="${esc(z.name)}"></div><div class="field"><label>층</label><select id="tkFloor">${floorOpts(z.floor)}</select></div></div>
+   <p class="note">고른 부재를 구획 안에서 자동으로 찾아 물량을 넣어요. 기둥은 부호 위치로 개수를, 벽체·보는 도면 선(CAD 도면)에서 길이를, 슬래브는 구획 면적 × 두께로 계산해요. 모르는 것만 따로 물어볼게요.</p>`,
+   b=>{const types=[...b.querySelectorAll('[data-tk]:checked')].map(i=>i.dataset.tk);const nm=b.querySelector('#tkName').value.trim();
+     if(nm&&nm!==z.name){S.shapes.forEach(x=>{if(x.sheetId===z.sheetId&&x.zone===z.name)x.zone=nm});z.name=nm;S.cur.zone=nm}
+     z.floor=b.querySelector('#tkFloor').value;S.cur.floor=z.floor;S.set.tkTypes=types;save();if(types.length)setTimeout(()=>takeoff(z,types),50);else{refreshDraw()}});
+  $('#mOk').textContent='뽑기'}
+/* CAD 선을 구획 안으로 잘라서 px 선분으로 */
+async function zoneSegs(z){const sh=S.sheets.find(x=>x.id===z.sheetId);const F=sh&&FILES[sh.fileId];if(!F||(F.kind!=='dxf'&&F.kind!=='dwg')||!CADT[sh.id])return null;
+  const out=await cadOut(sh.fileId,F);const {x0,y1,k}=CADT[sh.id];const T=p=>[(p[0]-x0)*k,(y1-p[1])*k];
+  const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const bx0=Math.min(...xs),bx1=Math.max(...xs),by0=Math.min(...ys),by1=Math.max(...ys);
+  const clip=(a,b)=>{let t0=0,t1=1;const dx=b[0]-a[0],dy=b[1]-a[1];for(const [pp,q] of [[-dx,a[0]-bx0],[dx,bx1-a[0]],[-dy,a[1]-by0],[dy,by1-a[1]]]){if(pp===0){if(q<0)return null}else{const r=q/pp;if(pp<0){if(r>t1)return null;if(r>t0)t0=r}else{if(r<t0)return null;if(r<t1)t1=r}}}return [[a[0]+t0*dx,a[1]+t0*dy],[a[0]+t1*dx,a[1]+t1*dy]]};
+  const segs=[];for(const o of out){if(o.k!=='l')continue;for(let i=1;i<o.p.length;i++){const c=clip(T(o.p[i-1]),T(o.p[i]));if(c&&Math.hypot(c[1][0]-c[0][0],c[1][1]-c[0][1])>0.5)segs.push(c)}}
+  return segs}
+/* 평행선 쌍 찾기: 간격이 두께(벽)·폭(보)과 같은 두 선 → 중심선 */
+function pairLines(segs,mmpx,targets){const minL=150/mmpx;
+  let L=segs.map(([a,b])=>{let th=Math.atan2(b[1]-a[1],b[0]-a[0]);if(th<0)th+=Math.PI;if(th>=Math.PI-1e-9)th-=Math.PI;const c=Math.cos(th),s_=Math.sin(th);const r=-a[0]*s_+a[1]*c;let t0=a[0]*c+a[1]*s_,t1=b[0]*c+b[1]*s_;if(t0>t1)[t0,t1]=[t1,t0];return {th,r,t0,t1}});
+  // 같은 직선 위 조각(점선 등) 합치기
+  L.sort((p,q)=>p.th-q.th||p.r-q.r||p.t0-q.t0);const M=[];const atol=0.006,rtol=4/mmpx,gap=400/mmpx;
+  for(const l of L){const m=M.find(m=>Math.abs(m.th-l.th)<atol&&Math.abs(m.r-l.r)<rtol&&l.t0<=m.t1+gap&&l.t1>=m.t0-gap);if(m){m.t0=Math.min(m.t0,l.t0);m.t1=Math.max(m.t1,l.t1)}else M.push({...l})}
+  const lines=M.filter(m=>m.t1-m.t0>minL);const pairs=[];
+  for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){const a=lines[i],b=lines[j];let dth=Math.abs(a.th-b.th);dth=Math.min(dth,Math.PI-dth);if(dth>atol)continue;
+    let rb=b.r;if(Math.abs(a.th-b.th)>Math.PI/2)rb=-rb;const d=Math.abs(a.r-rb)*mmpx;
+    const tg=targets.find(t=>Math.abs(d-t.w)<=Math.max(10,t.w*0.04));if(!tg)continue;const o0=Math.max(a.t0,b.t0),o1=Math.min(a.t1,b.t1);if((o1-o0)*mmpx<Math.max(1000,d*2))continue;pairs.push({a,b,i,j,d,tg,o0,o1,rm:(a.r+rb)/2,len:o1-o0})}
+  pairs.sort((p,q)=>q.len-p.len);const used=new Map();const res=[];
+  const useOf=(id,o0,o1)=>(used.get(id)||[]).reduce((s,[u0,u1])=>s+Math.max(0,Math.min(o1,u1)-Math.max(o0,u0)),0);
+  for(const p of pairs){const ov=Math.max(useOf(p.i,p.o0,p.o1),useOf(p.j,p.o0,p.o1));if(ov>(p.o1-p.o0)*0.3)continue;
+    for(const id of [p.i,p.j])(used.get(id)||used.set(id,[]).get(id)).push([p.o0,p.o1]);
+    const c=Math.cos(p.a.th),s_=Math.sin(p.a.th);const P=t=>[t*c-p.rm*s_,t*s_+p.rm*c];res.push({pts:[P(p.o0),P(p.o1)],tg:p.tg,w:p.d,len:p.len*mmpx})}
+  return res}
+/* 부호 근처에서 크기가 B×H인 기둥 단면(사각형) 중심 찾기 */
+function snapCol(segs,p,B,H){const R=Math.max(B,H)*3;const near=segs.filter(([a,b])=>Math.hypot((a[0]+b[0])/2-p[0],(a[1]+b[1])/2-p[1])<R);let best=null;
+  const len=([a,b])=>Math.hypot(b[0]-a[0],b[1]-a[1]);const mid=([a,b])=>[(a[0]+b[0])/2,(a[1]+b[1])/2];
+  for(const [w,o] of [[B,H],[H,B]]){const es=near.filter(e=>Math.abs(len(e)-w)<w*0.06);
+    for(let i=0;i<es.length;i++)for(let j=i+1;j<es.length;j++){const m1=mid(es[i]),m2=mid(es[j]);const d=Math.hypot(m1[0]-m2[0],m1[1]-m2[1]);if(Math.abs(d-o)>o*0.06)continue;
+      const v1=[es[i][1][0]-es[i][0][0],es[i][1][1]-es[i][0][1]],v2=[es[j][1][0]-es[j][0][0],es[j][1][1]-es[j][0][1]];if(Math.abs(v1[0]*v2[1]-v1[1]*v2[0])>0.05*w*w)continue;
+      const c=[(m1[0]+m2[0])/2,(m1[1]+m2[1])/2];const dd=Math.hypot(c[0]-p[0],c[1]-p[1]);if(!best||dd<best.dd)best={c,dd}}}
+  return best&&best.dd<R?best.c:null}
+async function takeoff(z,types){const sh=S.sheets.find(x=>x.id===z.sheetId);if(!sh)return;const mmpx=sh.scale||1;
+  let toks=null;try{busy('구획 안 부재 찾는 중…');toks=await sheetTokens(sh)}catch(e){logErr('부재 찾기',e)}finally{busy(null)}
+  const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const inZ=p=>p[0]>=Math.min(...xs)&&p[0]<=Math.max(...xs)&&p[1]>=Math.min(...ys)&&p[1]<=Math.max(...ys);
+  const zt=(toks||[]).filter(t=>inZ(tc(t)));const hits=matchCodes(zt,z.floor);const L=libFor(z.floor);
+  // 다시 뽑으면 이전 자동 결과 지우기
+  S.shapes=S.shapes.filter(x=>!(x.sheetId===z.sheetId&&x.zone===z.name&&x.auto&&types.includes((libOf(x.code)||{}).type)));
+  const base={sheetId:z.sheetId,floor:z.floor,zone:z.name,zoneAuto:true,mult:1,adj:0,h:0,auto:true};const rep=[],todo=[],after=[];let segs=null;
+  const getSegs=async()=>{if(segs===null){try{busy('도면 선 분석 중…');segs=await zoneSegs(z)||false}finally{busy(null)}}return segs};
+  for(const typ of types){
+    const th=hits.filter(h=>h.l.type===typ);
+    if(typ==='기둥'){const groups=new Map();for(const h of th){const uniq=hits.filter(x=>x.word===h.word).length===1;if(!uniq)continue;groups.set(h.l.code,h.pts)}
+      const sg0=groups.size?await getSegs():null;
+      for(const [code,pts] of groups){const l=libOf(code);let moved=0;const P=sg0&&l&&l.B?pts.map(p=>{const c=snapCol(sg0,p,(+l.B)/mmpx,(+l.H||+l.B)/mmpx);if(c)moved++;return c||p}):pts;
+        S.shapes.push({...base,id:uid(),kind:'count',pts:P,code,memo:moved?'자동: 기둥 단면 위치':'자동: 부호 위치'})}
+      const n=[...groups.values()].reduce((a,p)=>a+p.length,0);if(n)rep.push(`기둥 ${n}개`);else todo.push('기둥: 부호를 못 찾음 → [개수]로 찍어주세요')}
+    if(typ==='슬래브'){const s={...base,id:uid(),kind:'poly',pts:z.pts.map(p=>[...p]),code:(th[0]&&th[0].l.code)||S.cur.code,memo:'자동: 구획 면적'};S.shapes.push(s);
+      const words=new Set(th.map(h=>h.word));if(th.length===1){rep.push(`슬래브 ${th[0].l.code}`)}else{after.push(()=>askCode(s,th,th.length?'구획 안에 슬래브 부호가 여러 개예요. 구획 전체에 쓸 것을 고르세요 (다르면 나중에 [사각 구획]으로 나눠 그리세요).':'구획 안에서 슬래브 부호를 못 찾았어요.'));rep.push('슬래브(부호 확인)')}}
+    if(typ==='벽체'||typ==='보'){const sg=await getSegs();
+      if(!sg){todo.push(`${typ}: CAD 도면(DWG·DXF)에서만 자동으로 길이를 재요 → [길이]로 그려주세요`);continue}
+      let cand=th.map(h=>h.l);if(!cand.length&&typ==='벽체')cand=L.filter(l=>l.type==='벽체');if(!cand.length){todo.push(`${typ}: 구획 안에서 ${typ} 부호를 못 찾음`);continue}
+      const tw=[...new Set(cand.map(l=>typ==='벽체'?(+l.T||+l.B):(+l.B)).filter(Boolean))].map(w=>({w,ls:cand.filter(l=>(typ==='벽체'?(+l.T||+l.B):+l.B)===w)}));
+      const res=pairLines(sg,mmpx,tw);let tot=0,cnt=0;const unsure=new Set();
+      for(const r of res){let ls=r.tg.ls;let code=ls[0].code;if(ls.length>1){const mid=[(r.pts[0][0]+r.pts[1][0])/2,(r.pts[0][1]+r.pts[1][1])/2];let best=null;
+          for(const h of th.filter(h=>ls.includes(h.l)))for(const p of h.pts){const d=Math.hypot(p[0]-mid[0],p[1]-mid[1]);if(!best||d<best.d)best={d,code:h.l.code}}if(best)code=best.code;else unsure.add(ls.map(l=>l.code).join('/'))}
+        S.shapes.push({...base,id:uid(),kind:'line',pts:r.pts,code,memo:`자동: 평행선 간격 ${Math.round(r.w)}mm`});tot+=r.len;cnt++}
+      if(cnt)rep.push(`${typ} ${cnt}구간 ${fmt(tot/1000,1)}m`);else todo.push(`${typ}: 두께가 맞는 평행선을 못 찾음 → [길이]로 그려주세요`);
+      if(unsure.size)todo.push(`${typ}: 두께가 같은 부호(${[...unsure].join(', ')}) 구분 확인`)}}
+  z.codes=[...new Set([...(z.codes||[]),...S.shapes.filter(x=>x.zone===z.name&&x.sheetId===z.sheetId).map(x=>x.code)])];
+  refreshDraw();save();
+  const vol=S.shapes.filter(x=>x.sheetId===z.sheetId&&x.zone===z.name).reduce((a,x)=>a+calc(x).vol,0);
+  if(todo.length){modal(`${z.name} 결과`,`<p><b>${esc(rep.join(' · ')||'자동으로 찾은 것 없음')}</b> — 합계 ${fmt(vol,2)} m³</p><p class="note">직접 해주셔야 할 것:</p><ul style="margin:4px 0 0 18px;font-size:13px">${todo.map(t=>`<li>${esc(t)}</li>`).join('')}</ul><p class="note">자동으로 그린 선·점은 도면에서 눌러 고치거나 지울 수 있어요.</p>`,()=>{if(after.length)setTimeout(after[0],80)});$('#mCancel').style.display='none';$('#mOk').textContent='확인'}
+  else{toast(`${z.name}: ${rep.join(' · ')} · 합계 ${fmt(vol,2)} m³`);if(after.length)after[0]()}}
 async function autoZone(z,opt={}){
   let toks=null;try{busy('구획 안의 부재 찾는 중…');toks=await zoneTokens(z)}catch(e){logErr('구획 부재 찾기',e)}finally{busy(null)}
   if(toks===null&&opt.ocr){try{toks=await zoneOCR(z)}catch(e){toast(errMsg(e));toks=[]}}
@@ -1053,8 +1125,8 @@ async function pickZoneMembers(z,ocr){
 }
 function renderZones(){const zs=S.zones.filter(z=>z.sheetId===S.activeSheet);$('#zoneCount').textContent=zs.length||'';
   $('#zoneListBox').innerHTML=zs.length?zs.map(z=>{const ss=S.shapes.filter(s=>s.sheetId===z.sheetId&&s.zone===z.name);const v=ss.reduce((a,s)=>a+calc(s).vol,0);
-    return `<div class="zl"><span class="sw"></span><span class="t" data-zr="${z.id}" title="눌러서 이름 바꾸기">${esc(z.name)} <span class="note">· ${esc(z.floor||'')} · ${ss.length}개 · ${fmt(v,2)} m³${z.codes&&z.codes.length?` · 부재 ${z.codes.length}`:''}</span></span><button class="btn sm" data-zp="${z.id}" title="이 구획에서 쓸 부재 고르기">부재</button><button class="btn sm" data-zu="${z.id}" title="이 구획으로 그리기">사용</button><button class="btn sm danger" data-zd="${z.id}" title="영역 삭제">×</button></div>`}).join(''):'<div class="note">[타설 구획] 도구로 영역을 한 번 드래그하면 안의 물량이 그 구획으로 묶여요.</div>';
-  $$('#zoneListBox [data-zp]').forEach(b=>b.onclick=()=>pickZoneMembers(S.zones.find(x=>x.id===b.dataset.zp)));
+    return `<div class="zl"><span class="sw"></span><span class="t" data-zr="${z.id}" title="눌러서 이름 바꾸기">${esc(z.name)} <span class="note">· ${esc(z.floor||'')} · ${ss.length}개 · ${fmt(v,2)} m³${z.codes&&z.codes.length?` · 부재 ${z.codes.length}`:''}</span></span><button class="btn sm" data-zt="${z.id}" title="이 구획에서 물량 다시 뽑기">뽑기</button><button class="btn sm" data-zu="${z.id}" title="이 구획으로 그리기">사용</button><button class="btn sm danger" data-zd="${z.id}" title="영역 삭제">×</button></div>`}).join(''):'<div class="note">[타설 구획] 도구로 영역을 한 번 드래그하면 안의 물량이 그 구획으로 묶여요.</div>';
+  $$('#zoneListBox [data-zt]').forEach(b=>b.onclick=()=>askTakeoff(S.zones.find(x=>x.id===b.dataset.zt)));
   $$('#zoneListBox [data-zu]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zu);S.cur.zone=z.name;if(z.floor)S.cur.floor=z.floor;if(z.codes&&z.codes.length&&!z.codes.includes(S.cur.code))S.cur.code=z.codes[0];refreshDraw();save();toast(`${z.name} 구획으로 그려요`)});
   $$('#zoneListBox [data-zd]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zd);S.zones=S.zones.filter(x=>x!==z);applyZones(z.sheetId);refreshDraw();save()});
   $$('#zoneListBox [data-zr]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zr);
@@ -1431,7 +1503,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13f';const ERRLOG=[];
+const APP_VER='2026.11.13h';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
