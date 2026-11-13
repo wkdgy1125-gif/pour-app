@@ -623,8 +623,16 @@ $('#setSteelDed').onchange=e=>{S.set.steelDed=e.target.checked;refreshDraw();sav
 const normF=f=>String(f||'').toUpperCase().replace(/\s|층/g,'').replace(/^지하(\d+)/,'B$1').replace(/^지상/,'').replace(/F$/,'');
 const codeFloor=c=>{const m=String(c).match(/\(([^()]+)\)\s*$/);return m?normF(m[1]):null};
 const codeBase=c=>String(c).replace(/\s*\([^()]+\)\s*$/,'');
-function libFor(floor){const f=normF(floor);const L=S.lib.filter(l=>{const cf=codeFloor(l.code);return !cf||cf.includes('~')||cf===f});return L.length?L:S.lib}
-function codeOpts(sel,floor){const L=floor!==undefined?libFor(floor):S.lib;const list=L.some(l=>l.code===sel)?L:[...(S.lib.filter(l=>l.code===sel)),...L];return list.map(l=>`<option value="${esc(l.code)}" ${l.code===sel?'selected':''}>${esc(l.code)} · ${esc(l.type)}${dimStr(l)?' · '+dimStr(l):''}</option>`).join('')}
+const fRank=f=>{f=normF(f);let m;if(m=f.match(/^B(\d+)$/))return -(+m[1]);if(m=f.match(/^(\d+)$/))return +m[1];if(m=f.match(/^PH(\d*)$/))return 100+(+m[1]||1);if(/^R$|^ROOF$|^지붕$/.test(f))return 200;return null};
+function floorIn(cf,f){if(!cf)return true;const parts=cf.split(',');const r=fRank(f);
+  return parts.some(p=>{p=p.trim();if(p.includes('~')){const [a,b]=p.split('~').map(fRank);if(a==null||b==null||r==null)return true;return r>=Math.min(a,b)&&r<=Math.max(a,b)}return normF(p)===normF(f)})}
+function libFor(floor){const L=S.lib.filter(l=>floorIn(codeFloor(l.code),floor));return L.length?L:S.lib}
+function curZoneObj(){return S.zones&&S.zones.find(z=>z.sheetId===S.activeSheet&&z.name===S.cur.zone&&z.codes&&z.codes.length)}
+function codeOpts(sel,floor,zone){const L=floor!==undefined?libFor(floor):S.lib;let list=L.some(l=>l.code===sel)?L:[...(S.lib.filter(l=>l.code===sel)),...L];
+  const o=l=>`<option value="${esc(l.code)}" ${l.code===sel?'selected':''}>${esc(l.code)} · ${esc(l.type)}${dimStr(l)?' · '+dimStr(l):''}</option>`;
+  const z=zone===undefined?curZoneObj():zone;if(z){const zc=z.codes.map(c=>S.lib.find(l=>l.code===c)).filter(Boolean);if(zc.length){const set=new Set(zc.map(l=>l.code));
+    return `<optgroup label="${esc(z.name)} 부재">${zc.map(o).join('')}</optgroup><optgroup label="전체 일람표">${list.filter(l=>!set.has(l.code)).map(o).join('')}</optgroup>`}}
+  return list.map(o).join('')}
 function floorOpts(sel){return S.floors.map(f=>`<option ${f.name===sel?'selected':''}>${esc(f.name)}</option>`).join('')}
 function dimStr(l){const a=[];if(l.B)a.push(l.B);if(l.H)a.push(l.H);let s=a.join('×');if(l.T)s+=(s?' ':'')+'T'+l.T;if(l.steel)s+=(s?' + ':'')+l.steel;return s}
 /* 철골 단면적(cm²) — H, ㅁ(BOX), 원형강관(P/Φ), L형, '+'로 조합 */
@@ -652,13 +660,13 @@ function renderCur(){
   if(!S.lib.find(l=>l.code===S.cur.code))S.cur.code=S.lib[0]?.code||'';
   if(!S.floors.find(f=>f.name===S.cur.floor))S.cur.floor=S.floors[0]?.name||'';
   { const L=libFor(S.cur.floor); if(!L.some(l=>l.code===S.cur.code)){const same=L.find(l=>codeBase(l.code)===codeBase(S.cur.code));S.cur.code=(same||L[0]||{}).code||S.cur.code} }
-  $('#curCode').innerHTML=codeOpts(S.cur.code,S.cur.floor);$('#curFloor').innerHTML=floorOpts(S.cur.floor);$('#mCode').innerHTML=libFor(S.cur.floor).map(l=>`<option value="${esc(l.code)}" ${l.code===S.cur.code?'selected':''}>${esc(l.code)} · ${esc(l.type)}</option>`).join('');$('#mFloor').innerHTML=floorOpts(S.cur.floor);$('#curZone').value=S.cur.zone;
+  $('#curCode').innerHTML=codeOpts(S.cur.code,S.cur.floor);$('#curFloor').innerHTML=floorOpts(S.cur.floor);$('#mCode').innerHTML=codeOpts(S.cur.code,S.cur.floor);$('#mFloor').innerHTML=floorOpts(S.cur.floor);$('#curZone').value=S.cur.zone;
   const zs=[...new Set(S.shapes.map(s=>s.zone).filter(Boolean))];$('#zoneList').innerHTML=zs.map(z=>`<option value="${esc(z)}">`).join('');
   $('#legend').innerHTML=TYPES.map(t=>`<span><i style="background:${TCOLOR[t]}"></i>${t}</span>`).join('');
 }
 $('#curCode').onchange=e=>{S.cur.code=e.target.value;save();suggestTool()};
 $('#curFloor').onchange=e=>{S.cur.floor=e.target.value;renderCur();save()};
-$('#curZone').oninput=e=>{S.cur.zone=e.target.value;save()};
+$('#curZone').oninput=e=>{S.cur.zone=e.target.value;save()};$('#curZone').onchange=()=>renderCur();
 function suggestTool(){const l=libOf(S.cur.code);if(!l)return;const t={'기둥':'count','보':'line','벽체':'line','슬래브':'poly'}[l.type];if(t&&tool!=='select'&&tool!=='scale'&&tool!==t&&!(t==='poly'&&tool==='rect'))setTool(t==='poly'?'rect':t)}
 
 /* ---------- 계산 ---------- */
@@ -817,7 +825,7 @@ function finishDraft(){
   if(d.scale){draw();return}
   const kind=d.kind==='rect'?'poly':d.kind;
   const need={poly:3,line:2,count:1}[kind];
-  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true}S.shapes.push(s);selId=s.id;refreshDraw();save()}
+  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true;if(zz.floor)s.floor=zz.floor}S.shapes.push(s);selId=s.id;refreshDraw();save()}
   else draw();
   if(tool!=='select')setHint(hintFor(tool));
 }
@@ -863,12 +871,51 @@ function applyZones(sheetId){let n=0;for(const s of S.shapes.filter(x=>x.sheetId
 function nextZoneName(){const used=new Set(S.zones.map(z=>z.name));const last=S.zones.length?S.zones[S.zones.length-1].name:'';const m=last.match(/^(\D*)(\d+)(.*)$/);
   if(m){let i=+m[2]+1;while(used.has(m[1]+i+m[3]))i++;return m[1]+i+m[3]}let i=1;while(used.has(i+'구획'))i++;return i+'구획'}
 function newZone(P){const sh=curSheet();if(!sh)return;const names=[...new Set(S.zones.map(z=>z.name))];
-  modal('타설 구획 이름',`<div class="field"><label>구획 이름</label><input id="zName" list="zoneNames" value="${esc(nextZoneName())}" placeholder="예: 1공구, B1F-A"></div><datalist id="zoneNames">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+  modal('타설 구획 이름',`<div class="field"><label>구획 이름</label><input id="zName" list="zoneNames" value="${esc(nextZoneName())}" placeholder="예: 1공구, B1F-A"></div><div class="field"><label>층</label><select id="zFloor">${floorOpts(S.cur.floor)}</select></div><datalist id="zoneNames">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
    <p class="note">영역 안에 있는 물량 구획(가운데 점 기준)에 이 이름이 자동으로 들어가요. 이후 이 영역 안에 그리는 구획도 자동 지정돼요. 같은 이름을 쓰면 여러 도면·영역을 한 구획으로 묶을 수 있어요.</p>`,
-   b=>{const nm=b.querySelector('#zName').value.trim();if(!nm)return false;S.zones.push({id:uid(),sheetId:sh.id,name:nm,pts:P});const n=applyZones(sh.id);S.cur.zone=nm;refreshDraw();save();toast(`'${nm}' 구획 지정 · 물량 구획 ${S.shapes.filter(s=>s.sheetId===sh.id&&s.zone===nm).length}개 포함`)})}
+   b=>{const nm=b.querySelector('#zName').value.trim();if(!nm)return false;const fl=b.querySelector('#zFloor').value;const z={id:uid(),sheetId:sh.id,name:nm,pts:P,floor:fl,codes:[]};S.zones.push(z);applyZones(sh.id);S.cur.zone=nm;S.cur.floor=fl;refreshDraw();save();setTimeout(()=>pickZoneMembers(z),60)})}
+/* 타설 구획 안의 도면 글자에서 일람표 부호 찾기 */
+async function zoneTokens(z){const sh=S.sheets.find(x=>x.id===z.sheetId);const F=sh&&FILES[sh.fileId];if(!F)return [];
+  const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+  const inR=t=>{const cx=t.x+t.w/2,cy=t.y+t.h/2;return cx>=x0&&cx<=x1&&cy>=y0&&cy<=y1};
+  if(F.kind==='pdf'&&typeof pdfjsLib!=='undefined')return (await pdfTokens(F,sh.page,sh.pdfScale||1)).filter(inR);
+  if(F.kind==='dxf'||F.kind==='dwg')return (DXFTXT[sh.id]||[]).filter(inR);return null}
+function matchCodes(toks,floor){const L=libFor(floor);const byBase=new Map();
+  for(const l of L){const b=codeBase(l.code).toUpperCase();const k=b.replace(/-\d+$/,'');(byBase.get(k)||byBase.set(k,[]).get(k)).push(l);if(k!==b)(byBase.get(b)||byBase.set(b,[]).get(b)).push(l)}
+  const hit=new Map();
+  for(const t of toks){const words=String(t.s).toUpperCase().replace(/\s+/g,' ').match(/[A-Z]{1,5}\d{1,4}[A-Z]{0,2}(-\d+)?/g)||[];
+    for(const w of words){const ls=byBase.get(w)||byBase.get(w.replace(/-\d+$/,''));if(!ls)continue;for(const l of ls){const h=hit.get(l.code)||{l,n:0,pts:[]};h.n++;h.pts.push([t.x+t.w/2,t.y+t.h/2]);hit.set(l.code,h)}}}
+  return [...hit.values()].sort((a,b)=>TYPES.indexOf(a.l.type)-TYPES.indexOf(b.l.type)||a.l.code.localeCompare(b.l.code,'ko',{numeric:true}))}
+async function pickZoneMembers(z,ocr){
+  let toks=null,how='';try{busy('구획 안의 부재 찾는 중…');toks=await zoneTokens(z);how=toks?'도면 글자':'';
+    if(ocr||(toks&&toks.length===0&&!toks)){const bg=BG[z.sheetId];const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.max(0,Math.min(...xs)),y0=Math.max(0,Math.min(...ys));
+      const sc=prepForOCR(bg,x0,y0,Math.min(bg.width,Math.max(...xs))-x0,Math.min(bg.height,Math.max(...ys))-y0);const f=sc.width/(Math.min(bg.width,Math.max(...xs))-x0);
+      toks=(await ocrTokens(sc)).map(t=>({...t,x:x0+t.x/f,y:y0+t.y/f,w:t.w/f,h:t.h/f}));how='사진 글자인식'}}
+  catch(e){logErr('구획 부재 찾기',e);toast(errMsg(e))}finally{busy(null)}
+  const fl=z.floor||S.cur.floor;const hits=toks?matchCodes(toks,fl):[];const found=new Set(hits.map(h=>h.l.code));
+  const prev=new Set(z.codes||[]);const extra=(z.codes||[]).filter(c=>!found.has(c)).map(c=>S.lib.find(l=>l.code===c)).filter(Boolean);
+  const row=(l,n,on)=>`<label class="zm"><input type="checkbox" data-c="${esc(l.code)}" ${on?'checked':''}><span class="sw" style="background:${TCOLOR[l.type]}"></span><b>${esc(l.code)}</b><span class="note">${esc(l.type)} · ${esc(dimStr(l))}</span>${n?`<span class="chip">도면 ${n}곳</span>`:''}${n&&l.type==='기둥'?`<span class="note"><input type="checkbox" data-cnt="${esc(l.code)}"> 개수 자동</span>`:''}</label>`;
+  const isImg=toks===null;
+  modal(`${z.name} · ${fl} 부재 선택`,`<style>.zm{display:flex;align-items:center;gap:6px;padding:6px 2px;border-bottom:1px solid var(--line);font-size:13px;flex-wrap:wrap}.zm .sw{width:10px;height:10px;border-radius:2px}.zm input{width:auto}</style>
+    <p class="note">${hits.length?`구획 안 ${how}에서 일람표 부호 ${hits.length}개를 찾았어요. 이 구획에서 쓸 부재를 고르세요.`:isImg?'사진 도면이라 글자를 바로 읽을 수 없어요. [글자 인식]을 누르거나 아래에서 직접 추가하세요.':'구획 안에서 일람표 부호를 찾지 못했어요. 아래에서 직접 추가하세요.'}</p>
+    <div style="max-height:46vh;overflow:auto">${hits.map(h=>row(h.l,h.n,!prev.size||prev.has(h.l.code))).join('')}${extra.map(l=>row(l,0,true)).join('')}</div>
+    <div class="bar" style="margin-top:8px;gap:6px;flex-wrap:wrap"><select id="zAdd" class="btn" style="flex:1;min-width:160px"><option value="">+ 일람표에서 추가…</option>${codeOpts('',fl,null)}</select>${isImg||how==='사진 글자인식'?'':''}${isImg?'<button class="btn sm" id="zOcr">글자 인식</button>':''}<button class="btn sm" id="zAll">모두</button><button class="btn sm" id="zNone">해제</button></div>
+    <p class="note">고른 부재는 이 구획에서 그릴 때 부호 목록 맨 위에 나와요. 기둥의 [개수 자동]을 켜면 도면의 부호 위치마다 개수가 바로 들어가요.</p>`,
+    b=>{const sel=[...b.querySelectorAll('input[data-c]:checked')].map(i=>i.dataset.c);z.codes=sel;let made=0;
+      for(const i of b.querySelectorAll('input[data-cnt]:checked')){const h=hits.find(x=>x.l.code===i.dataset.cnt);if(!h||!sel.includes(h.l.code))continue;
+        S.shapes.push({id:uid(),sheetId:z.sheetId,kind:'count',pts:h.pts,code:h.l.code,floor:fl,zone:z.name,zoneAuto:true,mult:1,adj:0,h:0,memo:'구획 부재 자동 개수'});made+=h.pts.length}
+      S.cur.zone=z.name;S.cur.floor=fl;if(sel.length&&!sel.includes(S.cur.code))S.cur.code=sel[0];refreshDraw();save();toast(`${z.name}: 부재 ${sel.length}개 선택${made?` · 기둥 ${made}개 자동 입력`:''}`)});
+  const mb=$('#mBody');
+  mb.querySelector('#zAdd').onchange=e=>{const c=e.target.value;if(!c)return;if(!mb.querySelector(`input[data-c="${CSS.escape(c)}"]`)){const l=S.lib.find(x=>x.code===c);const d=document.createElement('div');d.innerHTML=row(l,0,true);mb.querySelector('div[style*="max-height"]').appendChild(d.firstElementChild)}e.target.value=''};
+  mb.querySelector('#zAll').onclick=()=>mb.querySelectorAll('input[data-c]').forEach(i=>i.checked=true);
+  mb.querySelector('#zNone').onclick=()=>mb.querySelectorAll('input[data-c]').forEach(i=>i.checked=false);
+  const zo=mb.querySelector('#zOcr');if(zo)zo.onclick=()=>{$('#modal').classList.remove('on');pickZoneMembers(z,true)};
+}
 function renderZones(){const zs=S.zones.filter(z=>z.sheetId===S.activeSheet);$('#zoneCount').textContent=zs.length||'';
   $('#zoneListBox').innerHTML=zs.length?zs.map(z=>{const ss=S.shapes.filter(s=>s.sheetId===z.sheetId&&s.zone===z.name);const v=ss.reduce((a,s)=>a+calc(s).vol,0);
-    return `<div class="zl"><span class="sw"></span><span class="t" data-zr="${z.id}" title="눌러서 이름 바꾸기">${esc(z.name)} <span class="note">· ${ss.length}개 · ${fmt(v,2)} m³</span></span><button class="btn sm danger" data-zd="${z.id}" title="영역 삭제">×</button></div>`}).join(''):'<div class="note">[타설 구획] 도구로 영역을 한 번 드래그하면 안의 물량이 그 구획으로 묶여요.</div>';
+    return `<div class="zl"><span class="sw"></span><span class="t" data-zr="${z.id}" title="눌러서 이름 바꾸기">${esc(z.name)} <span class="note">· ${esc(z.floor||'')} · ${ss.length}개 · ${fmt(v,2)} m³${z.codes&&z.codes.length?` · 부재 ${z.codes.length}`:''}</span></span><button class="btn sm" data-zp="${z.id}" title="이 구획에서 쓸 부재 고르기">부재</button><button class="btn sm" data-zu="${z.id}" title="이 구획으로 그리기">사용</button><button class="btn sm danger" data-zd="${z.id}" title="영역 삭제">×</button></div>`}).join(''):'<div class="note">[타설 구획] 도구로 영역을 한 번 드래그하면 안의 물량이 그 구획으로 묶여요.</div>';
+  $$('#zoneListBox [data-zp]').forEach(b=>b.onclick=()=>pickZoneMembers(S.zones.find(x=>x.id===b.dataset.zp)));
+  $$('#zoneListBox [data-zu]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zu);S.cur.zone=z.name;if(z.floor)S.cur.floor=z.floor;if(z.codes&&z.codes.length&&!z.codes.includes(S.cur.code))S.cur.code=z.codes[0];refreshDraw();save();toast(`${z.name} 구획으로 그려요`)});
   $$('#zoneListBox [data-zd]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zd);S.zones=S.zones.filter(x=>x!==z);applyZones(z.sheetId);refreshDraw();save()});
   $$('#zoneListBox [data-zr]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zr);
     modal('구획 이름 바꾸기',`<div class="field"><label>새 이름</label><input id="zName" value="${esc(z.name)}"></div>`,bb=>{const nm=bb.querySelector('#zName').value.trim();if(!nm)return false;const old=z.name;z.name=nm;S.shapes.forEach(s=>{if(s.sheetId===z.sheetId&&s.zoneAuto&&s.zone===old)s.zone=nm});refreshDraw();save()})})}
@@ -1244,7 +1291,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13b';const ERRLOG=[];
+const APP_VER='2026.11.13c';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
