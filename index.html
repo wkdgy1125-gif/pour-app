@@ -1085,7 +1085,7 @@ async function autoCode(s){const sh=S.sheets.find(x=>x.id===s.sheetId);if(!sh)re
   const hits=matchCodes(sel,s.floor).filter(filt);
   if(!hits.length){const unk=unknownWords(sel);if(unk.length&&!(s.kind==='poly'&&cur&&['벽체','보','기둥'].includes(cur.type)&&false)){askCode(s,[],`'${unk[0]}' 부호가 일람표에 없어요.`,unk[0]);return}}
   const byW=new Map();for(const h of hits)(byW.get(h.word)||byW.set(h.word,[]).get(h.word)).push(h);
-  const cands=[...byW.values()].sort((a,b)=>b[0].n-a[0].n);
+  const pr=t=>s.kind==='poly'?['슬래브','기초','계단','벽체','보','기둥','기타'].indexOf(t):0;const cands=[...byW.values()].sort((a,b)=>pr(a[0].l.type)-pr(b[0].l.type)||b[0].n-a[0].n);
   if(cands.length===1&&cands[0].length===1){const h=cands[0][0],l=h.l;if(s.kind==='poly'){await applyPoly(s,l,h);return}if(s.code!==l.code){s.code=l.code;S.cur.code=l.code;refreshDraw();save();toast(`부호 자동 인식: ${l.code} (${l.type} ${dimStr(l)})`)}return}
   if(!cands.length){if(s.kind==='poly'&&cur&&['벽체','보','기둥'].includes(cur.type)){await applyPoly(s,cur,null);return}if(!curOk)askCode(s,[],`구획 안에서 ${okT.slice(0,2).join('·')} 부호를 찾지 못했어요.`);return}
   askCode(s,cands.flat(),cands.length>1?'구획 안에 부호가 여러 개 있어요.':'같은 부호에 일람표 항목이 여러 개예요.')}
