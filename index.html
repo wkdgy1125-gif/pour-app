@@ -229,6 +229,8 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
     <div class="field"><label>보 춤에서 슬래브 두께 공제 (mm)</label><input type="number" id="setBeamDeduct" min="0"></div>
     <div class="field"><label>기둥·벽 높이 공제 (mm, 층고에서)</label><input type="number" id="setColDeduct" min="0"></div>
     <p class="note">0이면 공제하지 않습니다. 겹치는 부분을 빼려면 여기서 설정하세요.</p>
+    <div class="field"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="setSteelDed" style="width:auto"> 매입 철골(SRC) 체적 공제</label></div>
+    <p class="note">일람표의 [철골 규격]·[As]가 있는 부재는 콘크리트 체적에서 철골 단면적 × 길이(기둥은 높이)를 뺍니다.</p>
   </aside>
 
   <div class="stage" id="stage">
@@ -606,6 +608,7 @@ function renderFloors(){
 $('#addFloor').onclick=()=>{S.floors.push({name:(S.floors.length+1)+'F',h:3600});renderFloors();renderCur();save()};
 $('#setBeamDeduct').onchange=e=>{S.set.beamDeduct=+e.target.value||0;refreshDraw();save()};
 $('#setColDeduct').onchange=e=>{S.set.colDeduct=+e.target.value||0;refreshDraw();save()};
+$('#setSteelDed').onchange=e=>{S.set.steelDed=e.target.checked;refreshDraw();save()};
 
 // 부호 끝의 (B1F)/(3F) 같은 층 표시 → 층별 부호 목록
 const normF=f=>String(f||'').toUpperCase().replace(/\s|층/g,'').replace(/^지하(\d+)/,'B$1').replace(/^지상/,'').replace(/F$/,'');
@@ -614,7 +617,19 @@ const codeBase=c=>String(c).replace(/\s*\([^()]+\)\s*$/,'');
 function libFor(floor){const f=normF(floor);const L=S.lib.filter(l=>{const cf=codeFloor(l.code);return !cf||cf.includes('~')||cf===f});return L.length?L:S.lib}
 function codeOpts(sel,floor){const L=floor!==undefined?libFor(floor):S.lib;const list=L.some(l=>l.code===sel)?L:[...(S.lib.filter(l=>l.code===sel)),...L];return list.map(l=>`<option value="${esc(l.code)}" ${l.code===sel?'selected':''}>${esc(l.code)} · ${esc(l.type)}${dimStr(l)?' · '+dimStr(l):''}</option>`).join('')}
 function floorOpts(sel){return S.floors.map(f=>`<option ${f.name===sel?'selected':''}>${esc(f.name)}</option>`).join('')}
-function dimStr(l){const a=[];if(l.B)a.push(l.B);if(l.H)a.push(l.H);let s=a.join('×');if(l.T)s+=(s?' ':'')+'T'+l.T;return s}
+function dimStr(l){const a=[];if(l.B)a.push(l.B);if(l.H)a.push(l.H);let s=a.join('×');if(l.T)s+=(s?' ':'')+'T'+l.T;if(l.steel)s+=(s?' + ':'')+l.steel;return s}
+/* 철골 단면적(cm²) — H, ㅁ(BOX), 원형강관(P/Φ), L형, '+'로 조합 */
+function steelArea(spec){if(!spec)return 0;let tot=0;
+  for(let part of String(spec).split('+')){part=part.toUpperCase().replace(/\(.*?\)/g,'').replace(/\s+/g,' ').trim();if(!part)continue;
+    let k=1;const mk=part.match(/^(\d+)\s*[-×X*]\s*(?=[A-Zㅁ□ΦØ])/);if(mk&&+mk[1]<=8){k=+mk[1];part=part.slice(mk[0].length)}else part=part.replace(/^\d+(?=[A-Zㅁ□ΦØ])/,'');
+    const n=(part.match(/\d+(\.\d+)?/g)||[]).map(Number);let a=0;
+    if(/^H/.test(part)&&n.length>=4){const[A,B,tw,tf]=n;a=2*B*tf+(A-2*tf)*tw}
+    else if(/^(ㅁ|□|BOX|RHS|SHS)/.test(part)&&n.length>=3){const[A,B,t1]=n,t2=n[3]||t1;a=A*B-(A-2*t1)*(B-2*t2)}
+    else if(/^(P|Φ|Ø|O|CHS|PIPE)/.test(part)&&n.length>=2){const[D,t]=n;a=Math.PI*(D*D-(D-2*t)**2)/4}
+    else if(/^L/.test(part)&&n.length>=3){const[A,B,t]=n;a=t*(A+B-t)}
+    else if(/^(PL|FB)/.test(part)&&n.length>=2){a=n[0]*n[1]}
+    tot+=k*a}
+  return Math.round(tot)/100}
 function addFloorsFromLib(){
   const have=new Set(S.floors.map(f=>normF(f.name)));const add=new Set();
   S.lib.forEach(l=>{const f=codeFloor(l.code);if(f&&!f.includes('~')&&/^B?\d+$/.test(f)&&!have.has(f))add.add(f)});
@@ -665,6 +680,10 @@ function calc(s){
     else {v=q*B*H*T;f=`${q}개 × ${fmt(B,3)} × ${fmt(H,3)} × ${fmt(T,3)}`}
   }
   if(!v)res.warn='치수 부족';
+  const As=(+l.As||steelArea(l.steel))/1e4; // m²
+  if(v&&As&&S.set.steelDed!==false){let L=0;
+    if(s.kind==='count'&&type==='기둥')L=q*hgt;else if(s.kind==='line'&&type!=='벽체')L=q;else if(s.kind==='line'&&type==='벽체')L=0;
+    if(L){const sv=Math.min(v,As*L);res.gross=v;res.steel=sv*mult;v-=sv;f=`(${f}) − 철골 ${fmt(As,4)}m² × ${fmt(L,3)}m`}}
   v=v*mult+adj; if(mult!==1)f+=` × ${mult}`; if(adj)f+=` ${adj>0?'+':'−'} ${fmt(Math.abs(adj),3)}`;
   res.vol=v;res.f=f;return res;
 }
@@ -842,12 +861,13 @@ function renderShapeList(){
 /* ---------- 일람표 ---------- */
 function renderLib(){
   const used={};S.shapes.forEach(s=>used[s.code]=(used[s.code]||0)+1);
-  $('#libTbl').innerHTML=`<tr><th style="width:110px">부호</th><th style="width:110px">부재종류</th><th style="width:100px">B 폭(mm)</th><th style="width:100px">H 춤·길이(mm)</th><th style="width:100px">T 두께·깊이(mm)</th><th>비고</th><th style="width:60px">사용</th><th style="width:40px"></th></tr>`+
+  $('#libTbl').innerHTML=`<tr><th style="width:110px">부호</th><th style="width:110px">부재종류</th><th style="width:100px">B 폭(mm)</th><th style="width:100px">H 춤·길이(mm)</th><th style="width:100px">T 두께·깊이(mm)</th><th style="width:150px">철골 규격</th><th style="width:80px">As(cm²)</th><th>비고</th><th style="width:60px">사용</th><th style="width:40px"></th></tr>`+
   S.lib.map((l,i)=>`<tr><td><input data-i="${i}" data-k="code" value="${esc(l.code)}"></td><td><select data-i="${i}" data-k="type">${TYPES.map(t=>`<option ${t===l.type?'selected':''}>${t}</option>`).join('')}</select></td>
-  <td><input type="number" data-i="${i}" data-k="B" value="${l.B||''}"></td><td><input type="number" data-i="${i}" data-k="H" value="${l.H||''}"></td><td><input type="number" data-i="${i}" data-k="T" value="${l.T||''}"></td><td><input data-i="${i}" data-k="note" value="${esc(l.note)}"></td><td class="n">${used[l.code]||''}</td><td><button class="btn sm danger" data-ld="${i}">×</button></td></tr>`).join('');
+  <td><input type="number" data-i="${i}" data-k="B" value="${l.B||''}"></td><td><input type="number" data-i="${i}" data-k="H" value="${l.H||''}"></td><td><input type="number" data-i="${i}" data-k="T" value="${l.T||''}"></td><td><input data-i="${i}" data-k="steel" value="${esc(l.steel||'')}" placeholder="예: H-400x400x13x21"></td><td><input type="number" step="0.01" data-i="${i}" data-k="As" value="${l.As||''}"></td><td><input data-i="${i}" data-k="note" value="${esc(l.note)}"></td><td class="n">${used[l.code]||''}</td><td><button class="btn sm danger" data-ld="${i}">×</button></td></tr>`).join('');
   $$('#libTbl [data-k]').forEach(el=>el.onchange=()=>{const l=S.lib[el.dataset.i];const k=el.dataset.k;
     if(k==='code'){const nv=el.value.trim();if(!nv||S.lib.some((x,j)=>x.code===nv&&j!=el.dataset.i)){toast('부호가 비었거나 중복이에요');el.value=l.code;return}S.shapes.forEach(s=>{if(s.code===l.code)s.code=nv});if(S.cur.code===l.code)S.cur.code=nv;l.code=nv}
-    else l[k]=['B','H','T'].includes(k)?(+el.value||0):el.value;save();renderCur();draw()});
+    else if(k==='steel'){l.steel=el.value.trim();l.As=steelArea(l.steel)||l.As||0;renderLib()}
+    else l[k]=['B','H','T','As'].includes(k)?(+el.value||0):el.value;save();renderCur();draw()});
   $$('#libTbl [data-ld]').forEach(b=>b.onclick=()=>{const l=S.lib[+b.dataset.ld];if(used[l.code]){toast(`'${l.code}'는 구획 ${used[l.code]}개에서 사용 중이에요`);return}S.lib.splice(+b.dataset.ld,1);renderLib();renderCur();save()});
 }
 $('#libAdd').onclick=()=>{let n=1;while(S.lib.some(l=>l.code==='NEW'+n))n++;S.lib.push({code:'NEW'+n,type:'기타',B:0,H:0,T:0,note:''});renderLib();renderCur();save()};
@@ -855,14 +875,15 @@ function typeOf(s){s=String(s||'').trim();if(TYPES.includes(s))return s;if(/기�
 function importRows(rows){
   rows=rows.filter(r=>r&&r.some(c=>String(c??'').trim()));if(!rows.length)return 0;
   let hi=-1,map={code:0,type:1,B:2,H:3,T:4,note:5};
-  for(let i=0;i<Math.min(5,rows.length);i++){const h=rows[i].map(c=>String(c??'').replace(/\s/g,'').toUpperCase());if(h.some(c=>/부호|CODE|MARK|기호/.test(c))){hi=i;const f=re=>h.findIndex(c=>re.test(c));map={code:f(/부호|CODE|MARK|기호/),type:f(/종류|TYPE|구분|부재/),B:f(/^B|폭|WIDTH/),H:f(/^H|^D$|춤|높이|DEPTH|길이/),T:f(/^T|두께|THK|THICK/),note:f(/비고|NOTE|REMARK/)};break}}
+  for(let i=0;i<Math.min(5,rows.length);i++){const h=rows[i].map(c=>String(c??'').replace(/\s/g,'').toUpperCase());if(h.some(c=>/부호|CODE|MARK|기호/.test(c))){hi=i;const f=re=>h.findIndex(c=>re.test(c));map={code:f(/부호|CODE|MARK|기호/),type:f(/종류|TYPE|구분|부재/),B:f(/^B|폭|WIDTH/),H:f(/^H|^D$|춤|높이|DEPTH|길이/),T:f(/^T|두께|THK|THICK/),note:f(/비고|NOTE|REMARK/),As:f(/단면적|^AS/),steel:h.findIndex(c=>/철골|STEEL/.test(c)&&!/단면적|^AS/.test(c))};break}}
   let n=0;for(const r of rows.slice(hi+1)){const code=String(r[map.code]??'').trim();if(!code)continue;const num=k=>map[k]>=0?(parseFloat(String(r[map[k]]??'').replace(/[^\d.]/g,''))||0):0;
     const item={code,type:map.type>=0?typeOf(r[map.type]):typeOf(code),B:num('B'),H:num('H'),T:num('T'),note:map.note>=0?String(r[map.note]??''):''};
+    const st=map.steel>=0?String(r[map.steel]??'').trim():'';if(st){item.steel=st;item.As=num('As')||steelArea(st)}else if(map.As>=0&&num('As'))item.As=num('As');
     const ex=S.lib.find(l=>l.code===code);if(ex)Object.assign(ex,item);else S.lib.push(item);n++}
   return n;
 }
 $('#libFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;let n=0;
-  try{if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());const arr=Array.isArray(j)?j:j.lib||[];arr.forEach(it=>{const ex=S.lib.find(l=>l.code===it.code);const v={code:it.code,type:typeOf(it.type||it.code),B:+it.B||0,H:+it.H||0,T:+it.T||0,note:it.note||''};if(ex)Object.assign(ex,v);else S.lib.push(v);n++})}
+  try{if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());const arr=Array.isArray(j)?j:j.lib||[];arr.forEach(it=>{const ex=S.lib.find(l=>l.code===it.code);const v={code:it.code,type:typeOf(it.type||it.code),B:+it.B||0,H:+it.H||0,T:+it.T||0,note:it.note||''};if(it.steel||it.As){v.steel=it.steel||'';v.As=+it.As||steelArea(it.steel)}if(ex)Object.assign(ex,v);else S.lib.push(v);n++})}
   else{if(typeof XLSX==='undefined')throw new Error('엑셀 엔진 로드 실패');const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});for(const nm of wb.SheetNames)n+=importRows(XLSX.utils.sheet_to_json(wb.Sheets[nm],{header:1,raw:false}))}}
   catch(err){toast('불러오기 실패: '+err.message);return}
   const nf=addFloorsFromLib();toast(`부재 ${n}개를 불러왔어요`+(nf?` · 층 ${nf}개 추가`:''));renderFloors();renderLib();renderCur();save()};
@@ -907,6 +928,7 @@ function renderSum(){
   const {dims,out,loss}=buildSummary(rows);const tot=rows.reduce((a,r)=>a+r.c.vol,0);const warns=rows.filter(r=>r.c.warn).length;
   $('#kpis').innerHTML=`<div class="kpi"><div class="l">총 타설량</div><div class="v">${fmt(tot,2)} m³</div></div>
    <div class="kpi"><div class="l">할증 ${S.set.loss||0}% 포함</div><div class="v">${fmt(tot*loss,2)} m³</div></div>
+   ${(()=>{const sd=rows.reduce((a,r)=>a+(r.c.steel||0),0);return sd?`<div class="kpi"><div class="l">철골 공제</div><div class="v">−${fmt(sd,3)} m³</div></div>`:''})()}
    <div class="kpi"><div class="l">구획 수</div><div class="v">${rows.length}</div></div>
    ${warns?`<div class="kpi" style="border-color:var(--warn)"><div class="l warn">확인 필요</div><div class="v warn">${warns}</div></div>`:''}`;
   if(!rows.length){$('#sumTbl').innerHTML='<tr><td class="note" style="padding:20px">집계할 구획이 없어요. ① 도면 구획 탭에서 구획을 그려주세요.</td></tr>';$('#detTbl').innerHTML='';return}
@@ -921,12 +943,12 @@ function renderSum(){
   // 소계 행을 그룹 앞에 오도록 재정렬: out에는 비리프가 먼저 들어가므로 그대로 사용
   $('#sumTbl').innerHTML=html;
   const det=detailRows(rows);
-  $('#detTbl').innerHTML=`<tr>${det.head.map(h=>`<th>${h}</th>`).join('')}</tr>`+det.body.map(r=>`<tr>${r.map((v,i)=>`<td class="${typeof v==='number'?'n':''}">${typeof v==='number'?(i===det.head.length-1?fmt(v,3):String(v)):esc(v)}</td>`).join('')}</tr>`).join('');
+  $('#detTbl').innerHTML=`<tr>${det.head.map(h=>`<th>${h}</th>`).join('')}</tr>`+det.body.map(r=>`<tr>${r.map((v,i)=>`<td class="${typeof v==='number'?'n':''}">${typeof v==='number'?(i>=det.head.length-2?fmt(v,3):String(v)):esc(v)}</td>`).join('')}</tr>`).join('');
 }
 function detailRows(rows){
-  const head=['No','도면','층','타설 구획','부재종류','부호','규격','형상','계산식','배수','메모','체적(m³)'];
+  const head=['No','도면','층','타설 구획','부재종류','부호','규격','형상','계산식','배수','메모','철골 공제(m³)','체적(m³)'];
   const sorted=rows.slice().sort((a,b)=>cmp('floor')(a.floor,b.floor)||cmp('type')(a.type,b.type)||String(a.code).localeCompare(b.code,'ko',{numeric:true}));
-  const body=sorted.map((r,i)=>[i+1,r.sheet,r.floor,r.zone,r.type,r.code,r.c.spec,{poly:'면적',line:'길이',count:'개수'}[r.s.kind],r.c.warn?('⚠ '+r.c.warn):r.c.f,+r.s.mult||1,r.s.memo||'',r3(r.c.vol)]);
+  const body=sorted.map((r,i)=>[i+1,r.sheet,r.floor,r.zone,r.type,r.code,r.c.spec,{poly:'면적',line:'길이',count:'개수'}[r.s.kind],r.c.warn?('⚠ '+r.c.warn):r.c.f,+r.s.mult||1,r.s.memo||'',r.c.steel?r3(r.c.steel):'',r3(r.c.vol)]);
   return {head,body};
 }
 ['g1','g2','g3'].forEach(id=>$('#'+id).onchange=e=>{S.set[id]=e.target.value;save();renderSum()});
@@ -955,13 +977,13 @@ $('#xlsxBtn').onclick=async()=>{
   const title=[['콘크리트 타설물량 집계표'],[`작성일 ${new Date().toLocaleDateString('ko-KR')} · 집계기준: ${dims.map(d=>GROUPS[d]).join(' › ')||'전체'} · 할증률 ${S.set.loss||0}%`],[]];
   const ws=XLSX.utils.aoa_to_sheet([...title,...aoa]);ws['!cols']=aoa[0].map((h,i)=>({wch:i>=aoa[0].length-3?14:(h==='수량'?22:14)}));ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:aoa[0].length-1}}];
   XLSX.utils.book_append_sheet(wb,ws,'집계표');
-  const det=detailRows(rows);const ws2=XLSX.utils.aoa_to_sheet([det.head,...det.body,['','','','','','','','','','','합계',r3(rows.reduce((a,r)=>a+r.c.vol,0))]]);ws2['!cols']=[5,18,7,12,9,8,14,6,38,6,14,11].map(w=>({wch:w}));XLSX.utils.book_append_sheet(wb,ws2,'상세내역');
+  const det=detailRows(rows);const ws2=XLSX.utils.aoa_to_sheet([det.head,...det.body,['','','','','','','','','','','합계',r3(rows.reduce((a,r)=>a+(r.c.steel||0),0)),r3(rows.reduce((a,r)=>a+r.c.vol,0))]]);ws2['!cols']=[5,18,7,12,9,8,22,6,48,6,14,11,11].map(w=>({wch:w}));XLSX.utils.book_append_sheet(wb,ws2,'상세내역');
   // 층×부재종류 피벗
   const fl=[...new Set(rows.map(r=>r.floor))].sort(cmp('floor')),ty=[...new Set(rows.map(r=>r.type))].sort(cmp('type'));
   const pv=[['층 \\ 부재',...ty,'합계'],...fl.map(f=>{const vs=ty.map(t=>r3(rows.filter(r=>r.floor===f&&r.type===t).reduce((a,r)=>a+r.c.vol,0)));return [f,...vs,r3(vs.reduce((a,b)=>a+b,0))]})];
   pv.push(['합계',...ty.map(t=>r3(rows.filter(r=>r.type===t).reduce((a,r)=>a+r.c.vol,0))),r3(rows.reduce((a,r)=>a+r.c.vol,0))]);
   const ws3=XLSX.utils.aoa_to_sheet(pv);ws3['!cols']=pv[0].map(()=>({wch:12}));XLSX.utils.book_append_sheet(wb,ws3,'층별×부재별');
-  const ws4=XLSX.utils.aoa_to_sheet([['부호','부재종류','B(mm)','H(mm)','T(mm)','비고'],...S.lib.map(l=>[l.code,l.type,l.B,l.H,l.T,l.note])]);XLSX.utils.book_append_sheet(wb,ws4,'부재일람표');
+  const ws4=XLSX.utils.aoa_to_sheet([['부호','부재종류','B(mm)','H(mm)','T(mm)','철골 규격','As(cm²)','비고'],...S.lib.map(l=>[l.code,l.type,l.B,l.H,l.T,l.steel||'',l.As||'',l.note])]);XLSX.utils.book_append_sheet(wb,ws4,'부재일람표');
   const buf=XLSX.write(wb,{bookType:'xlsx',type:'array'});
   await saveFile(`타설물량집계_${new Date().toISOString().slice(0,10)}.xlsx`,new Blob([buf]));
 };
@@ -981,7 +1003,7 @@ $('#projFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if
     S=Object.assign(S,j.state);applyState();toast('프로젝트를 열었어요')}catch(err){toast('열기 실패: '+err.message)}};
 
 function applyState(){
-  $('#setBeamDeduct').value=S.set.beamDeduct||0;$('#setColDeduct').value=S.set.colDeduct||0;
+  $('#setBeamDeduct').value=S.set.beamDeduct||0;$('#setColDeduct').value=S.set.colDeduct||0;$('#setSteelDed').checked=S.set.steelDed!==false;
   renderFloors();renderCur();renderSheets();
   if(S.activeSheet&&curSheet())selectSheet(S.activeSheet);else if(S.sheets[0])selectSheet(S.sheets[0].id);else{refreshDraw()}
 }
@@ -1183,7 +1205,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.12b';const ERRLOG=[];
+const APP_VER='2026.11.13';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
