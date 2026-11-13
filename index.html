@@ -119,6 +119,9 @@ kbd{font:11px var(--mono);border:1px solid var(--line);border-bottom-width:2px;b
 .draftbar.on{display:flex}
 .draftbar .btn{padding:8px 14px}
 .mobbar{display:none}
+.pager{position:absolute;top:10px;right:10px;z-index:3;display:flex;align-items:center;gap:4px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:4px;box-shadow:0 1px 3px rgba(0,0,0,.06);max-width:46%}
+.pager button{min-width:38px;font-size:16px}.pager .pn{font-size:12px;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
+.zl{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;font-size:13px}.zl:hover{background:#f3f2ee}.zl .sw{width:12px;height:12px;border:2px dashed #0f766e;border-radius:2px}.zl .t{flex:1;cursor:pointer}
 #backdrop{display:none}
 .tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
 canvas#cv{touch-action:none}
@@ -145,6 +148,7 @@ body{touch-action:manipulation}
   .toolbar::-webkit-scrollbar{display:none}
   .toolbar button{padding:8px 11px;white-space:nowrap;flex:none;font-size:13px}
   .hint{top:58px;bottom:auto;left:6px;right:6px}
+  .pager{top:auto;bottom:62px;right:6px;max-width:70%}.pager .pn{max-width:150px}
   .hint span{font-size:11px;padding:3px 7px}
   .hint #hintL{max-width:68%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hint #hintR:empty{display:none}
@@ -242,11 +246,14 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
       <button data-tool="line" title="길이 (L)">길이</button>
       <button data-tool="count" title="개수 (C)">개수</button>
       <div class="sep"></div>
+      <button data-tool="zone" title="타설 구획: 한 번 드래그로 영역 지정 (Z)">타설 구획</button>
+      <div class="sep"></div>
       <button data-tool="scale" title="축척 설정 (S)">축척</button>
       <div class="sep"></div>
       <button data-tool="ocr" title="도면의 일람표 영역을 드래그해서 읽기">일람표 인식</button>
       <button id="fitBtn" title="화면 맞춤 (F)">맞춤</button>
     </div>
+    <div class="pager" id="pager"><button class="btn sm" id="pgPrev" title="이전 도면 (PageUp / [)">◀</button><span class="pn" id="pgName"></span><button class="btn sm" id="pgNext" title="다음 도면 (PageDown / ])">▶</button></div>
     <canvas id="cv"></canvas>
     <div class="empty" id="sheetLoading" style="display:none;background:rgba(231,229,223,.85)"><div style="font-weight:600;color:var(--ink)">도면 그리는 중…</div><div class="note">DWG는 처음에 변환 엔진을 받느라 시간이 걸려요</div></div>
     <div class="empty" id="sheetErr" style="display:none;z-index:4;padding:20px;text-align:center"></div>
@@ -275,6 +282,8 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
     <h3>선택한 구획</h3>
     <div id="selPanel" class="note">도면에서 구획을 클릭하면 여기서 수정할 수 있어요.</div>
 
+    <h3>타설 구획 <span id="zoneCount" class="chip"></span></h3>
+    <div id="zoneListBox"></div>
     <h3>이 도면의 구획 <span id="shpCount" class="chip"></span></h3>
     <div id="shapeList"></div>
     <h3>색상</h3>
@@ -344,7 +353,7 @@ const TYPES=['기초','기둥','보','슬래브','벽체','계단','기타'];
 const TCOLOR={'기초':'#7c3aed','기둥':'#dc2626','보':'#2563eb','슬래브':'#059669','벽체':'#d97706','계단':'#db2777','기타':'#475569'};
 const GROUPS={none:'(없음)',floor:'층',type:'부재종류',code:'부호',zone:'타설 구획',sheet:'도면'};
 let S={
-  v:1, sheets:[], shapes:[],
+  v:1, sheets:[], shapes:[], zones:[],
   floors:[{name:'B1',h:4500},{name:'1F',h:4200},{name:'2F',h:3600},{name:'RF',h:3600}],
   lib:[
     {code:'F1',type:'기초',B:2400,H:2400,T:600,note:'독립기초 예시'},
@@ -581,12 +590,12 @@ function renderSheets(){
   $('#sheetList').innerHTML=S.sheets.map(sh=>{const n=S.shapes.filter(x=>x.sheetId===sh.id).length;return `<div class="sheet ${sh.id===S.activeSheet?'on':''}" data-id="${sh.id}"><span class="nm" title="${esc(sh.name)}">${esc(sh.name)}</span><span class="sc">${sh.scale?'':'<span class=warn>축척?</span> '}${n||''}</span><button class="btn sm danger" data-del="${sh.id}" title="삭제">×</button></div>`}).join('');
   $$('#sheetList .sheet').forEach(d=>d.onclick=e=>{if(e.target.dataset.del)return;selectSheet(d.dataset.id)});
   $$('#sheetList [data-del]').forEach(b=>b.onclick=()=>{const id=b.dataset.del;const n=S.shapes.filter(x=>x.sheetId===id).length;
-    modal('도면 삭제',`<p class="note">이 도면과 구획 ${n}개를 삭제할까요?</p>`,()=>{S.sheets=S.sheets.filter(s=>s.id!==id);S.shapes=S.shapes.filter(x=>x.sheetId!==id);delete BG[id];if(S.activeSheet===id)S.activeSheet=S.sheets[0]?.id||null;renderSheets();refreshDraw();save()})});
+    modal('도면 삭제',`<p class="note">이 도면과 구획 ${n}개를 삭제할까요?</p>`,()=>{S.sheets=S.sheets.filter(s=>s.id!==id);S.shapes=S.shapes.filter(x=>x.sheetId!==id);S.zones=S.zones.filter(x=>x.sheetId!==id);delete BG[id];if(S.activeSheet===id)S.activeSheet=S.sheets[0]?.id||null;renderSheets();refreshDraw();save()})});
   $('#emptyMsg').style.display=S.sheets.length?'none':'flex';
 }
 async function selectSheet(id){
   if(isMobile())closeSheets();
-  S.activeSheet=id;selId=null;draft=null;renderSheets();
+  S.activeSheet=id;selId=null;draft=null;renderSheets();renderPager();renderZones();
   const sh=curSheet();if(!sh){showSheetErr(null);draw();return}
   showSheetErr(null);
   if(!BG[sh.id]){busy(`${sh.name} 그리는 중…`);$('#sheetLoading').style.display='flex'}
@@ -706,6 +715,10 @@ function draw(){
   const bg=BG[sh.id];
   if(bg){ctx.imageSmoothingEnabled=view.z<1;ctx.imageSmoothingQuality='high';ctx.drawImage(bg,0,0);ctx.strokeStyle='#bbb';ctx.lineWidth=1/view.z;ctx.strokeRect(0,0,bg.width,bg.height)}
   const lw=2/view.z;
+  for(const z of S.zones.filter(x=>x.sheetId===sh.id)){const P=z.pts;ctx.setLineDash([10/view.z,6/view.z]);ctx.lineWidth=2.5/view.z;ctx.strokeStyle='#0f766e';ctx.fillStyle='rgba(15,118,110,.05)';
+    ctx.beginPath();P.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));ctx.closePath();ctx.fill();ctx.stroke();ctx.setLineDash([]);
+    const x=Math.min(...P.map(p=>p[0])),y=Math.min(...P.map(p=>p[1]));const fs=14/view.z;ctx.font=`700 ${fs}px IBM Plex Sans KR, sans-serif`;const tw=ctx.measureText(z.name).width;
+    ctx.fillStyle='#0f766e';ctx.fillRect(x,y-fs*1.5,tw+12/view.z,fs*1.5);ctx.fillStyle='#fff';ctx.fillText(z.name,x+6/view.z,y-fs*.4)}
   for(const s of S.shapes.filter(x=>x.sheetId===sh.id)){
     const c=calc(s);const col=TCOLOR[c.type]||'#475569';const on=s.id===selId;
     ctx.lineWidth=on?lw*1.8:lw;ctx.strokeStyle=on?'#1d4ed8':col;ctx.fillStyle=col+'33';
@@ -719,7 +732,7 @@ function draw(){
       ctx.fillStyle='rgba(255,255,255,.9)';ctx.fillRect(cp[0]-w/2-4/view.z,cp[1]-fs*.8-3/view.z,w+8/view.z,fs*1.2+4/view.z);ctx.fillStyle=c.warn?'#b45309':(on?'#1d4ed8':col);ctx.textAlign='center';ctx.fillText(txt,cp[0],cp[1]+fs*.15);ctx.textAlign='start'}
   }
   if(draft){
-    ctx.strokeStyle=draft.ocr?'#1d4ed8':'#c2410c';ctx.fillStyle=draft.ocr?'rgba(29,78,216,.10)':'rgba(194,65,12,.12)';ctx.lineWidth=lw;ctx.setLineDash([6/view.z,4/view.z]);
+    ctx.strokeStyle=draft.ocr?'#1d4ed8':draft.zone?'#0f766e':'#c2410c';ctx.fillStyle=draft.ocr?'rgba(29,78,216,.10)':draft.zone?'rgba(15,118,110,.08)':'rgba(194,65,12,.12)';ctx.lineWidth=lw;ctx.setLineDash([6/view.z,4/view.z]);
     const pts=draft.hover?[...draft.pts,draft.hover]:draft.pts;
     if(draft.kind==='count'){ctx.setLineDash([]);for(const p of draft.pts){ctx.beginPath();ctx.arc(p[0],p[1],7/view.z,0,Math.PI*2);ctx.fillStyle='#c2410c';ctx.fill()}}
     else if(pts.length){ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));if(draft.kind==='poly'||draft.kind==='rect'){ctx.closePath();ctx.fill()}ctx.stroke()}
@@ -730,9 +743,9 @@ function centroid(p){let x=0,y=0;p.forEach(q=>{x+=q[0];y+=q[1]});return [x/p.len
 function midOf(p){if(p.length<2)return p[0];const tot=polyLen(p);let acc=0;for(let i=1;i<p.length;i++){const d=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);if(acc+d>=tot/2){const t=(tot/2-acc)/d;return [p[i-1][0]+(p[i][0]-p[i-1][0])*t,p[i-1][1]+(p[i][1]-p[i-1][1])*t]}acc+=d}return p[0]}
 
 /* ---------- 도구 ---------- */
-const HINT={select:'구획 클릭: 선택 · 꼭짓점 드래그: 수정 · Delete: 삭제 · 빈 곳 드래그: 화면 이동',rect:'드래그해서 사각 면적 구획',poly:'클릭으로 꼭짓점 추가 · 더블클릭/Enter: 완료 · Esc: 취소',line:'클릭으로 점 추가 · 더블클릭/Enter: 완료 (연속선 가능)',count:'부재 위치를 클릭해서 개수 세기 · Enter: 묶음 완료',scale:'도면에서 치수를 아는 두 점을 클릭하세요',ocr:'도면의 일람표 부분을 드래그해서 감싸면 부호·치수를 읽어요'};
+const HINT={select:'구획 클릭: 선택 · 꼭짓점 드래그: 수정 · Delete: 삭제 · 빈 곳 드래그: 화면 이동',rect:'드래그해서 사각 면적 구획',poly:'클릭으로 꼭짓점 추가 · 더블클릭/Enter: 완료 · Esc: 취소',line:'클릭으로 점 추가 · 더블클릭/Enter: 완료 (연속선 가능)',count:'부재 위치를 클릭해서 개수 세기 · Enter: 묶음 완료',scale:'도면에서 치수를 아는 두 점을 클릭하세요',ocr:'도면의 일람표 부분을 드래그해서 감싸면 부호·치수를 읽어요',zone:'타설 구획 영역을 한 번 드래그하세요 — 안에 있는 물량 구획에 자동으로 지정돼요'};
 function setTool(t){finishDraft();tool=t;$$('#toolbar [data-tool]').forEach(b=>b.classList.toggle('on',b.dataset.tool===t));setHint(hintFor(t));cv.style.cursor=t==='select'?'default':'crosshair'}
-const HINT_T={select:'구획 탭: 선택 · 두 손가락: 확대/이동 · 꼭짓점 끌기: 수정',rect:'손가락으로 끌어서 사각 구획 · 두 손가락: 확대/이동',poly:'꼭짓점을 차례로 탭 → [완료]',line:'시작점·끝점(꺾이는 점)을 탭 → [완료]',count:'부재 위치를 탭해서 개수 세기 → [완료]',scale:'치수를 아는 두 점을 탭하세요',ocr:'일람표 부분을 손가락으로 끌어 감싸세요'};
+const HINT_T={select:'구획 탭: 선택 · 두 손가락: 확대/이동 · 꼭짓점 끌기: 수정',rect:'손가락으로 끌어서 사각 구획 · 두 손가락: 확대/이동',poly:'꼭짓점을 차례로 탭 → [완료]',line:'시작점·끝점(꺾이는 점)을 탭 → [완료]',count:'부재 위치를 탭해서 개수 세기 → [완료]',scale:'치수를 아는 두 점을 탭하세요',ocr:'일람표 부분을 손가락으로 끌어 감싸세요',zone:'타설 구획 영역을 손가락으로 한 번 끌어 감싸세요'};
 function hintFor(t){return (isMobile()||isTouch?HINT_T:HINT)[t]}
 function setHint(h){$('#hintL').textContent=h}
 $$('#toolbar [data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
@@ -751,7 +764,7 @@ function onDown(e){
     const hit=hitTest(w);selId=hit?hit.id:null;renderSel();renderShapeList();draw();
     if(hit&&isMobile()){openSheet('right');const rp=$('#rightPane');rp.scrollTop=Math.max(0,$('#selPanel').offsetTop-50)}
     if(hit&&!isTouch){drag={m:'move',s:hit,last:w,moved:false}}else drag={m:'pan',sx:sp[0],sy:sp[1],vx:view.x,vy:view.y};return}
-  if(tool==='rect'||tool==='ocr'){draft={kind:'rect',pts:[w],hover:null,ocr:tool==='ocr'};drag={m:'rect',a:w};return}
+  if(tool==='rect'||tool==='ocr'||tool==='zone'){draft={kind:'rect',pts:[w],hover:null,ocr:tool==='ocr',zone:tool==='zone'};drag={m:'rect',a:w};return}
   if(tool==='scale'){if(!draft)draft={kind:'line',pts:[],scale:true};draft.pts.push(w);if(draft.pts.length===2){const px=polyLen(draft.pts);draft=null;draw();
       modal('축척 설정',`<div class="field"><label>두 점 사이 실제 거리 (mm)</label><input type="number" inputmode="decimal" id="mDist" placeholder="예: 8400"></div><p class="note">도면 픽셀 거리 ${fmt(px,1)}px</p>`,b=>{const v=+b.querySelector('#mDist').value;if(!v)return false;sh.scale=v/px;renderSheets();refreshDraw();save();toast(`축척 설정: 1px = ${fmt(sh.scale,2)}mm`);setTool('select')})}draw();return}
   if(tool==='poly'||tool==='line'){if(!draft)draft={kind:tool,pts:[]};const p=snap(w,e);const lp=draft.pts[draft.pts.length-1];if(!lp||Math.hypot(lp[0]-p[0],lp[1]-p[1])>1/view.z)draft.pts.push(p);liveMeasure();draw();return}
@@ -793,8 +806,8 @@ function onUp(e){
   if(ptrs.size===0&&multi){multi=false;return}
   if(tap){const t=tap;tap=null;onDown({clientX:t.x,clientY:t.y,button:0,shiftKey:false});return}
   if(!drag)return;const d=drag;drag=null;
-  if(d.m==='rect'){if(draft&&draft.pts.length===4&&polyArea(draft.pts)*view.z*view.z>30){if(draft.ocr){const P=draft.pts;draft=null;draw();readRegion(curSheet(),Math.min(P[0][0],P[2][0]),Math.min(P[0][1],P[2][1]),Math.max(P[0][0],P[2][0]),Math.max(P[0][1],P[2][1]))}else{draft.kind='poly';finishDraft()}}else{draft=null;draw()}}
-  if(d.m==='vert'||(d.m==='move'&&d.moved)){refreshDraw();save()}
+  if(d.m==='rect'){if(draft&&draft.pts.length===4&&polyArea(draft.pts)*view.z*view.z>30){if(draft.ocr){const P=draft.pts;draft=null;draw();readRegion(curSheet(),Math.min(P[0][0],P[2][0]),Math.min(P[0][1],P[2][1]),Math.max(P[0][0],P[2][0]),Math.max(P[0][1],P[2][1]))}else if(draft.zone){const P=draft.pts;draft=null;draw();newZone(P)}else{draft.kind='poly';finishDraft()}}else{draft=null;draw()}}
+  if(d.m==='vert'||(d.m==='move'&&d.moved)){if(d.s.zoneAuto||!d.s.zone){const z=zoneAt(d.s);if(z){d.s.zone=z.name;d.s.zoneAuto=true}else if(d.s.zoneAuto){d.s.zone='';d.s.zoneAuto=false}}refreshDraw();save()}
 }
 window.addEventListener('pointerup',onUp);window.addEventListener('pointercancel',onUp);
 cv.addEventListener('wheel',e=>{e.preventDefault();const sp=evPt(e);const f=Math.exp(-e.deltaY*0.0015);const nz=Math.min(40,Math.max(0.02,view.z*f));view.x=sp[0]-(sp[0]-view.x)*nz/view.z;view.y=sp[1]-(sp[1]-view.y)*nz/view.z;view.z=nz;draw()},{passive:false});
@@ -804,7 +817,7 @@ function finishDraft(){
   if(d.scale){draw();return}
   const kind=d.kind==='rect'?'poly':d.kind;
   const need={poly:3,line:2,count:1}[kind];
-  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};S.shapes.push(s);selId=s.id;refreshDraw();save()}
+  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true}S.shapes.push(s);selId=s.id;refreshDraw();save()}
   else draw();
   if(tool!=='select')setHint(hintFor(tool));
 }
@@ -821,18 +834,44 @@ function inPoly(p,v){let c=false;for(let i=0,j=v.length-1;i<v.length;j=i++){if((
 window.addEventListener('keydown',e=>{
   if(e.target.matches('input,textarea,select'))return;if(!$('#v-draw').classList.contains('on'))return;
   if(e.code==='Space'){spaceDown=true;e.preventDefault();return}
+  if(e.key==='PageDown'||e.key===']'){pageSheet(1);e.preventDefault();return}
+  if(e.key==='PageUp'||e.key==='['){pageSheet(-1);e.preventDefault();return}
   if(e.key==='Enter'){finishDraft();return}
   if(e.key==='Escape'){if(draft){draft=null;draw()}else{selId=null;renderSel();renderShapeList();draw()}return}
   if(e.key==='Backspace'&&draft){draft.pts.pop();draw();e.preventDefault();return}
   if((e.key==='Delete'||e.key==='Backspace')&&selId){delShape(selId);return}
-  const m={v:'select',r:'rect',p:'poly',l:'line',c:'count',s:'scale'}[e.key.toLowerCase()];if(m)setTool(m);if(e.key.toLowerCase()==='f')fit();
+  const m={v:'select',r:'rect',p:'poly',l:'line',c:'count',s:'scale',z:'zone'}[e.key.toLowerCase()];if(m)setTool(m);if(e.key.toLowerCase()==='f')fit();
 });
 window.addEventListener('keyup',e=>{if(e.code==='Space')spaceDown=false});
 
 function delShape(id){S.shapes=S.shapes.filter(s=>s.id!==id);if(selId===id)selId=null;refreshDraw();save()}
 
 /* ---------- 오른쪽 패널 ---------- */
-function refreshDraw(){renderSel();renderShapeList();renderSheets();renderCur();draw()}
+function refreshDraw(){renderSel();renderShapeList();renderZones();renderSheets();renderCur();renderPager();draw()}
+/* ---------- 도면 넘기기 ---------- */
+function renderPager(){const i=S.sheets.findIndex(x=>x.id===S.activeSheet);const P=$('#pager');P.style.display=S.sheets.length>1?'flex':'none';if(i<0)return;
+  $('#pgName').textContent=`${i+1}/${S.sheets.length} · ${S.sheets[i].name}`;$('#pgName').title=S.sheets[i].name;$('#pgPrev').disabled=i<=0;$('#pgNext').disabled=i>=S.sheets.length-1}
+function pageSheet(d){const i=S.sheets.findIndex(x=>x.id===S.activeSheet);const j=i+d;if(j<0||j>=S.sheets.length){toast(d>0?'마지막 도면이에요':'첫 도면이에요');return}
+  if(draft){draft=null}const keep=tool;selectSheet(S.sheets[j].id).then(()=>{if(keep!=='scale'&&keep!=='ocr')setTool(keep)})}
+$('#pgPrev').onclick=()=>pageSheet(-1);$('#pgNext').onclick=()=>pageSheet(1);
+/* ---------- 타설 구획(드래그 영역) ---------- */
+function repPt(s){if(s.kind==='poly')return centroid(s.pts);if(s.kind==='line')return midOf(s.pts);return centroid(s.pts)}
+function zoneAt(s){const p=repPt(s);if(!p)return null;const zs=S.zones.filter(z=>z.sheetId===s.sheetId&&inPoly(p,z.pts));return zs[zs.length-1]||null}
+function applyZones(sheetId){let n=0;for(const s of S.shapes.filter(x=>x.sheetId===sheetId)){const z=zoneAt(s);
+  if(z){if(s.zone!==z.name||!s.zoneAuto){if(s.zone&&!s.zoneAuto&&s.zone!==z.name&&s._keep)continue;s.zone=z.name;s.zoneAuto=true;n++}}
+  else if(s.zoneAuto){s.zone='';s.zoneAuto=false;n++}}return n}
+function nextZoneName(){const used=new Set(S.zones.map(z=>z.name));const last=S.zones.length?S.zones[S.zones.length-1].name:'';const m=last.match(/^(\D*)(\d+)(.*)$/);
+  if(m){let i=+m[2]+1;while(used.has(m[1]+i+m[3]))i++;return m[1]+i+m[3]}let i=1;while(used.has(i+'구획'))i++;return i+'구획'}
+function newZone(P){const sh=curSheet();if(!sh)return;const names=[...new Set(S.zones.map(z=>z.name))];
+  modal('타설 구획 이름',`<div class="field"><label>구획 이름</label><input id="zName" list="zoneNames" value="${esc(nextZoneName())}" placeholder="예: 1공구, B1F-A"></div><datalist id="zoneNames">${names.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+   <p class="note">영역 안에 있는 물량 구획(가운데 점 기준)에 이 이름이 자동으로 들어가요. 이후 이 영역 안에 그리는 구획도 자동 지정돼요. 같은 이름을 쓰면 여러 도면·영역을 한 구획으로 묶을 수 있어요.</p>`,
+   b=>{const nm=b.querySelector('#zName').value.trim();if(!nm)return false;S.zones.push({id:uid(),sheetId:sh.id,name:nm,pts:P});const n=applyZones(sh.id);S.cur.zone=nm;refreshDraw();save();toast(`'${nm}' 구획 지정 · 물량 구획 ${S.shapes.filter(s=>s.sheetId===sh.id&&s.zone===nm).length}개 포함`)})}
+function renderZones(){const zs=S.zones.filter(z=>z.sheetId===S.activeSheet);$('#zoneCount').textContent=zs.length||'';
+  $('#zoneListBox').innerHTML=zs.length?zs.map(z=>{const ss=S.shapes.filter(s=>s.sheetId===z.sheetId&&s.zone===z.name);const v=ss.reduce((a,s)=>a+calc(s).vol,0);
+    return `<div class="zl"><span class="sw"></span><span class="t" data-zr="${z.id}" title="눌러서 이름 바꾸기">${esc(z.name)} <span class="note">· ${ss.length}개 · ${fmt(v,2)} m³</span></span><button class="btn sm danger" data-zd="${z.id}" title="영역 삭제">×</button></div>`}).join(''):'<div class="note">[타설 구획] 도구로 영역을 한 번 드래그하면 안의 물량이 그 구획으로 묶여요.</div>';
+  $$('#zoneListBox [data-zd]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zd);S.zones=S.zones.filter(x=>x!==z);applyZones(z.sheetId);refreshDraw();save()});
+  $$('#zoneListBox [data-zr]').forEach(b=>b.onclick=()=>{const z=S.zones.find(x=>x.id===b.dataset.zr);
+    modal('구획 이름 바꾸기',`<div class="field"><label>새 이름</label><input id="zName" value="${esc(z.name)}"></div>`,bb=>{const nm=bb.querySelector('#zName').value.trim();if(!nm)return false;const old=z.name;z.name=nm;S.shapes.forEach(s=>{if(s.sheetId===z.sheetId&&s.zoneAuto&&s.zone===old)s.zone=nm});refreshDraw();save()})})}
 function renderSel(){
   const s=S.shapes.find(x=>x.id===selId);const P=$('#selPanel');
   if(!s){P.className='note';P.innerHTML='도면에서 구획을 클릭하면 여기서 수정할 수 있어요.';return}
@@ -848,7 +887,7 @@ function renderSel(){
     <div style="font-size:12px;margin:6px 0 2px">${c.g.q==null?'':`<span class="chip">${fmt(c.g.q,s.kind==='count'?0:2)} ${c.g.u}</span> `}${esc(c.f)}</div>
     <div style="font:600 18px var(--mono)">${c.warn?`<span class="warn" style="font-size:13px">⚠ ${c.warn}</span>`:fmt(c.vol)+' m³'}</div>
     <div class="bar" style="margin:8px 0 0"><button class="btn sm danger" id="selDel">구획 삭제</button><button class="btn sm" id="selDup">복제</button></div></div>`;
-  P.querySelectorAll('[data-k]').forEach(el=>el.onchange=()=>{const k=el.dataset.k;s[k]=['mult','adj','h'].includes(k)?(+el.value||0):el.value;if(k==='floor'){const L=libFor(s.floor);if(!L.some(l=>l.code===s.code)){const same=L.find(l=>codeBase(l.code)===codeBase(s.code));if(same)s.code=same.code}}if(k==='mult'&&!s.mult)s.mult=1;refreshDraw();save()});
+  P.querySelectorAll('[data-k]').forEach(el=>el.onchange=()=>{const k=el.dataset.k;s[k]=['mult','adj','h'].includes(k)?(+el.value||0):el.value;if(k==='zone')s.zoneAuto=false;if(k==='floor'){const L=libFor(s.floor);if(!L.some(l=>l.code===s.code)){const same=L.find(l=>codeBase(l.code)===codeBase(s.code));if(same)s.code=same.code}}if(k==='mult'&&!s.mult)s.mult=1;refreshDraw();save()});
   $('#selDel').onclick=()=>delShape(s.id);
   $('#selDup').onclick=()=>{const n=JSON.parse(JSON.stringify(s));n.id=uid();const off=20/view.z;n.pts=n.pts.map(p=>[p[0]+off,p[1]+off]);S.shapes.push(n);selId=n.id;refreshDraw();save()};
 }
@@ -1000,7 +1039,7 @@ $('#btnProjSave').onclick=async()=>{
 $('#projFile').onchange=async e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
   try{const j=JSON.parse(await f.text());if(j.app!=='pour-qty')throw new Error('형식이 달라요');
     Object.keys(BG).forEach(k=>delete BG[k]);for(const [id,F] of Object.entries(j.files||{})){FILES[id]={name:F.name,kind:F.kind,data:b642ab(F.b64)};await idbPut('file:'+id,FILES[id])}
-    S=Object.assign(S,j.state);applyState();toast('프로젝트를 열었어요')}catch(err){toast('열기 실패: '+err.message)}};
+    S=Object.assign(S,j.state);S.zones=j.state.zones||[];applyState();toast('프로젝트를 열었어요')}catch(err){toast('열기 실패: '+err.message)}};
 
 function applyState(){
   $('#setBeamDeduct').value=S.set.beamDeduct||0;$('#setColDeduct').value=S.set.colDeduct||0;$('#setSteelDed').checked=S.set.steelDed!==false;
@@ -1205,7 +1244,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.13';const ERRLOG=[];
+const APP_VER='2026.11.13b';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
@@ -1216,7 +1255,7 @@ function showSheetErr(sh,msg){const el=$('#sheetErr');if(!sh){el.style.display='
   el.style.display='flex';
   $('#seRetry').onclick=()=>{delete BG[sh.id];selectSheet(sh.id)};
   $('#seOther').onclick=()=>{isMobile()?openSheet('left'):$('#fileIn').click()};
-  $('#seDel').onclick=()=>{S.sheets=S.sheets.filter(x=>x.id!==sh.id);S.shapes=S.shapes.filter(x=>x.sheetId!==sh.id);S.activeSheet=S.sheets[0]?.id||null;showSheetErr(null);renderSheets();if(S.activeSheet)selectSheet(S.activeSheet);else refreshDraw();save()};
+  $('#seDel').onclick=()=>{S.sheets=S.sheets.filter(x=>x.id!==sh.id);S.shapes=S.shapes.filter(x=>x.sheetId!==sh.id);S.zones=S.zones.filter(x=>x.sheetId!==sh.id);S.activeSheet=S.sheets[0]?.id||null;showSheetErr(null);renderSheets();if(S.activeSheet)selectSheet(S.activeSheet);else refreshDraw();save()};
 }
 async function showDiag(){
   let sw='없음';try{const r=await navigator.serviceWorker?.getRegistration();sw=r?(r.active?'작동 중':'설치 중'):'없음';if(navigator.serviceWorker?.controller)sw+=' (제어 중)'}catch(_){}
@@ -1390,7 +1429,7 @@ $('#dDone').onclick=()=>finishDraft();
 (async()=>{
   try{if(typeof pdfjsLib!=='undefined'){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'}}catch(e){}
   await openDB();
-  const st=await idbGet('state');if(st&&st.v===1){S=Object.assign(S,st);S.set=Object.assign({beamDeduct:0,colDeduct:0,loss:0,g1:'floor',g2:'type',g3:'code',filt:{}},S.set)}
+  const st=await idbGet('state');if(st&&st.v===1){S=Object.assign(S,st);S.zones=S.zones||[];S.set=Object.assign({beamDeduct:0,colDeduct:0,loss:0,g1:'floor',g2:'type',g3:'code',filt:{}},S.set)}
   resize();applyState();setTool('select');receiveShared();odHandleRedirect();$('#verLbl').textContent='버전 '+APP_VER;
   $('#saveState').textContent=idb?'이 브라우저에 자동 저장됨':'';
 })();
