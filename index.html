@@ -276,6 +276,7 @@ details.raw pre{max-height:140px;overflow:auto;background:#f6f5f1;padding:6px;bo
         <div class="field"><label>층</label><select id="curFloor"></select></div>
         <div class="field"><label>타설 구획</label><input id="curZone" list="zoneList" placeholder="예: 1공구"></div>
       </div>
+      <div class="field"><label>벽체·기둥 타설 높이 (mm) <span class="note">비우면 층고</span></label><input id="curH" type="number" inputmode="numeric" placeholder="층고 사용"></div>
       <datalist id="zoneList"></datalist>
     </div>
 
@@ -723,13 +724,14 @@ function renderCur(){
   if(!S.lib.find(l=>l.code===S.cur.code))S.cur.code=S.lib[0]?.code||'';
   if(!S.floors.find(f=>f.name===S.cur.floor))S.cur.floor=S.floors[0]?.name||'';
   { const L=libFor(S.cur.floor); if(!L.some(l=>l.code===S.cur.code)){const same=L.find(l=>codeBase(l.code)===codeBase(S.cur.code));S.cur.code=(same||L[0]||{}).code||S.cur.code} }
+  if(document.activeElement!==$('#curH'))$('#curH').value=S.cur.h||'';const fh=floorH(S.cur.floor);$('#curH').placeholder=fh?`층고 ${fh}`:'층고 사용';
   $('#curCode').innerHTML=codeOpts(S.cur.code,S.cur.floor);$('#curFloor').innerHTML=floorOpts(S.cur.floor);$('#mCode').innerHTML=codeOpts(S.cur.code,S.cur.floor);$('#mFloor').innerHTML=floorOpts(S.cur.floor);$('#curZone').value=S.cur.zone;
   const zs=[...new Set(S.shapes.map(s=>s.zone).filter(Boolean))];$('#zoneList').innerHTML=zs.map(z=>`<option value="${esc(z)}">`).join('');
   $('#legend').innerHTML=TYPES.map(t=>`<span><i style="background:${TCOLOR[t]}"></i>${t}</span>`).join('');
 }
 $('#curCode').onchange=e=>{S.cur.code=e.target.value;save();suggestTool()};
 $('#curFloor').onchange=e=>{S.cur.floor=e.target.value;renderCur();save()};
-$('#curZone').oninput=e=>{S.cur.zone=e.target.value;save()};$('#curZone').onchange=()=>renderCur();
+$('#curZone').oninput=e=>{S.cur.zone=e.target.value;save()};$('#curH').oninput=e=>{S.cur.h=+e.target.value||0;save()};$('#curZone').onchange=()=>renderCur();
 function suggestTool(){const l=libOf(S.cur.code);if(!l)return;const t={'기둥':'count','보':'line','벽체':'line','슬래브':'poly'}[l.type];if(t&&tool!=='select'&&tool!=='scale'&&tool!==t&&!(t==='poly'&&tool==='rect'))setTool(t==='poly'?'rect':t)}
 
 /* ---------- 계산 ---------- */
@@ -748,7 +750,7 @@ function calc(s){
   if(!l){res.warn='일람표에 없는 부호';return res}
   if(g.q==null){res.warn='축척 미설정';return res}
   const B=(+l.B||0)/1000,H=(+l.H||0)/1000,T=(+l.T||0)/1000;
-  const hgt=((+s.h||floorH(s.floor))-(S.set.colDeduct||0))/1000;
+  const hgt=(+s.h?+s.h:(floorH(s.floor)-(S.set.colDeduct||0)))/1000;
   const q=g.q; let v=0,f='';
   if(s.kind==='poly'){const d=T||H;v=q*d;f=`${fmt(q,2)}m² × ${fmt(d,3)}`}
   else if(s.kind==='line'){
@@ -759,6 +761,7 @@ function calc(s){
     if(type==='기둥'){v=q*B*H*hgt;f=`${q}개 × ${fmt(B,3)} × ${fmt(H,3)} × ${fmt(hgt,3)}`}
     else {v=q*B*H*T;f=`${q}개 × ${fmt(B,3)} × ${fmt(H,3)} × ${fmt(T,3)}`}
   }
+  if(+s.h&&(type==='벽체'||type==='기둥'))f+=' (높이 수기)';
   if(!v)res.warn='치수 부족';
   const As=(+l.As||steelArea(l.steel))/1e4; // m²
   if(v&&As&&S.set.steelDed!==false){let L=0;
@@ -888,7 +891,7 @@ function finishDraft(){
   if(d.scale){draw();return}
   const kind=d.kind==='rect'?'poly':d.kind;
   const need={poly:3,line:2,count:1}[kind];
-  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true;if(zz.floor)s.floor=zz.floor}S.shapes.push(s);selId=s.id;refreshDraw();save();autoCode(s)}
+  if(d.pts.length>=need){const s={id:uid(),sheetId:S.activeSheet,kind,pts:d.pts,code:S.cur.code,floor:S.cur.floor,zone:S.cur.zone,mult:1,adj:0,h:S.cur.h||0,memo:''};const zz=zoneAt(s);if(zz){s.zone=zz.name;s.zoneAuto=true;if(zz.floor)s.floor=zz.floor}S.shapes.push(s);selId=s.id;refreshDraw();save();autoCode(s)}
   else draw();
   if(tool!=='select')setHint(hintFor(tool));
 }
@@ -954,10 +957,11 @@ function askTakeoff(z,isNew){const last=S.set.tkTypes||['벽체','슬래브'];
   modal(`${z.name} · 무엇을 뽑을까요?`,`<style>.tk{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 10px}.tk label{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:15px;font-weight:600}.tk input{width:auto;transform:scale(1.2)}</style>
    <div class="tk">${TK_TYPES.map(t=>`<label><input type="checkbox" data-tk="${t}" ${last.includes(t)?'checked':''}><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${TCOLOR[t]}"></span>${t}</label>`).join('')}</div>
    <div class="row2"><div class="field"><label>구획 이름</label><input id="tkName" value="${esc(z.name)}"></div><div class="field"><label>층</label><select id="tkFloor">${floorOpts(z.floor)}</select></div></div>
+   <div class="field"><label>벽체·기둥 타설 높이 (mm) <span class="note">비우면 층고 ${floorH(z.floor)||''}</span></label><input id="tkH" type="number" inputmode="numeric" value="${z.h||S.cur.h||''}" placeholder="층고 사용"></div>
    <p class="note">고른 부재를 구획 안에서 자동으로 찾아 물량을 넣어요. 기둥은 부호 위치로 개수를, 벽체·보는 도면 선(CAD 도면)에서 길이를, 슬래브는 구획 면적 × 두께로 계산해요. 모르는 것만 따로 물어볼게요.</p>`,
    b=>{const types=[...b.querySelectorAll('[data-tk]:checked')].map(i=>i.dataset.tk);const nm=b.querySelector('#tkName').value.trim();
      if(nm&&nm!==z.name){S.shapes.forEach(x=>{if(x.sheetId===z.sheetId&&x.zone===z.name)x.zone=nm});z.name=nm;S.cur.zone=nm}
-     z.floor=b.querySelector('#tkFloor').value;S.cur.floor=z.floor;S.set.tkTypes=types;save();if(types.length)setTimeout(()=>takeoff(z,types),50);else{refreshDraw()}});
+     z.floor=b.querySelector('#tkFloor').value;S.cur.floor=z.floor;z.h=+b.querySelector('#tkH').value||0;S.set.tkTypes=types;save();if(types.length)setTimeout(()=>takeoff(z,types),50);else{refreshDraw()}});
   $('#mOk').textContent='뽑기'}
 /* CAD 선을 구획 안으로 잘라서 px 선분으로 */
 async function zoneSegs(z){const sh=S.sheets.find(x=>x.id===z.sheetId);const F=sh&&FILES[sh.fileId];if(!F||(F.kind!=='dxf'&&F.kind!=='dwg')||!CADT[sh.id])return null;
@@ -996,7 +1000,7 @@ async function takeoff(z,types){const sh=S.sheets.find(x=>x.id===z.sheetId);if(!
   const zt=(toks||[]).filter(t=>inZ(tc(t)));const hits=matchCodes(zt,z.floor);const L=libFor(z.floor);
   // 다시 뽑으면 이전 자동 결과 지우기
   S.shapes=S.shapes.filter(x=>!(x.sheetId===z.sheetId&&x.zone===z.name&&x.auto&&types.includes((libOf(x.code)||{}).type)));
-  const base={sheetId:z.sheetId,floor:z.floor,zone:z.name,zoneAuto:true,mult:1,adj:0,h:0,auto:true};const rep=[],todo=[],after=[];let segs=null;
+  const base={sheetId:z.sheetId,floor:z.floor,zone:z.name,zoneAuto:true,mult:1,adj:0,h:z.h||0,auto:true};const rep=[],todo=[],after=[];let segs=null;
   const getSegs=async()=>{if(segs===null){try{busy('도면 선 분석 중…');segs=await zoneSegs(z)||false}finally{busy(null)}}return segs};
   for(const typ of types){
     const th=hits.filter(h=>h.l.type===typ);
@@ -1060,6 +1064,19 @@ async function autoZone(z,opt={}){
 }
 async function zoneOCR(z){const bg=BG[z.sheetId];const xs=z.pts.map(p=>p[0]),ys=z.pts.map(p=>p[1]);const x0=Math.max(0,Math.min(...xs)),y0=Math.max(0,Math.min(...ys)),x1=Math.min(bg.width,Math.max(...xs)),y1=Math.min(bg.height,Math.max(...ys));
   const sc=prepForOCR(bg,x0,y0,x1-x0,y1-y0);const f=sc.width/(x1-x0);busy('글자 인식 중…');try{return (await ocrTokens(sc)).map(t=>({...t,x:x0+t.x/f,y:y0+t.y/f,w:t.w/f,h:t.h/f}))}finally{busy(null)}}
+/* ---------- 벽체·기둥 차수(1차·2차…) 나누기 ---------- */
+function liftSplit(s){if(!s)return;const H=+s.h||floorH(s.floor)||0;
+  const row=(i,v)=>`<div class="zm" style="display:flex;gap:8px;align-items:center;padding:4px 0"><b style="min-width:36px">${i}차</b><input type="number" inputmode="numeric" data-lift value="${v||''}" placeholder="높이 mm" style="flex:1"></div>`;
+  modal('차수 나누기',`<p class="note">${esc(s.code)} · ${esc(s.floor)} · 현재 높이 ${H||'?'}mm. 차수별 타설 높이를 넣으세요. 각 차수가 따로 구획으로 잡혀 집계에서 나눠 보여요.</p>
+    <div id="liftRows">${row(1,'')}${row(2,'')}</div><div class="bar" style="gap:6px;margin-top:6px"><button class="btn sm" id="liftAdd">+ 차수 추가</button><span class="note" id="liftSum"></span></div>
+    <div class="field" style="margin-top:8px"><label><input type="checkbox" id="liftAll" style="width:auto"> 같은 층·같은 타설 구획의 벽체·기둥 모두 나누기</label></div>`,
+    b=>{const hs=[...b.querySelectorAll('[data-lift]')].map(i=>+i.value||0).filter(Boolean);if(!hs.length)return false;
+      const all=b.querySelector('#liftAll').checked;const tg=all?S.shapes.filter(x=>x.sheetId===s.sheetId&&x.floor===s.floor&&(x.zone||'')===(s.zone||'')&&['벽체','기둥'].includes((libOf(x.code)||{}).type)):[s];
+      for(const x of tg){const base=(x.zone||'').replace(/\s*\d+차$/,'');const i=S.shapes.indexOf(x);const ns=hs.map((h,k)=>({...x,id:k?uid():x.id,h,zone:`${base?base+' ':''}${k+1}차`,zoneAuto:false}));S.shapes.splice(i,1,...ns)}
+      refreshDraw();save();toast(`${tg.length}개 구획을 ${hs.length}차로 나눴어요 (${hs.join(' / ')}mm)`)});
+  const upd=()=>{const v=[...$('#mBody').querySelectorAll('[data-lift]')].map(i=>+i.value||0);const sum=v.reduce((a,b)=>a+b,0);$('#liftSum').textContent=sum?`합계 ${sum}mm${H?` (현재 높이 ${H} 대비 ${sum-H>=0?'+':''}${sum-H})`:''}`:''};
+  $('#mBody').addEventListener('input',e=>{if(!e.target.matches('[data-lift]'))return;const ins=[...$('#mBody').querySelectorAll('[data-lift]')];if(H&&ins.length===2&&e.target===ins[0]&&+ins[0].value<H)ins[1].value=H-(+ins[0].value);upd()});
+  $('#liftAdd').onclick=()=>{const d=document.createElement('div');d.innerHTML=row($('#mBody').querySelectorAll('[data-lift]').length+1,'');$('#liftRows').appendChild(d.firstElementChild)}}
 /* ---------- 그린 구획의 부호 자동 인식 ---------- */
 const PTXT={};
 async function sheetTokens(sh){const F=FILES[sh.fileId];if(!F)return null;if(F.kind==='dxf'||F.kind==='dwg')return DXFTXT[sh.id]||[];
@@ -1170,7 +1187,7 @@ function renderSel(){
     <div class="field"><label>타설 구획</label><input data-k="zone" list="zoneList" value="${esc(s.zone)}"></div></div>
     <div class="row2"><div class="field"><label>배수 (반복 개소)</label><input type="number" data-k="mult" value="${s.mult}" step="1"></div>
     <div class="field"><label>보정 (±m³)</label><input type="number" data-k="adj" value="${s.adj}" step="0.01"></div></div>
-    ${(c.type==='기둥'||c.type==='벽체')?`<div class="field"><label>높이 직접 입력 (mm, 0=층고)</label><input type="number" data-k="h" value="${s.h||0}"></div>`:''}
+    ${(c.type==='기둥'||c.type==='벽체')?`<div class="field"><label>타설 높이 (mm) <span class="note">0이면 층고 ${floorH(s.floor)||''}</span></label><div style="display:flex;gap:6px"><input type="number" inputmode="numeric" data-k="h" value="${s.h||0}" style="flex:1"><button class="btn sm" id="liftSplit" title="한 층을 1차·2차…로 나눠 치는 경우">차수 나누기</button></div></div>`:''}
     <div class="field"><label>메모</label><input data-k="memo" value="${esc(s.memo)}"></div>
     <div style="font-size:12px;margin:6px 0 2px">${c.g.q==null?'':`<span class="chip">${fmt(c.g.q,s.kind==='count'?0:2)} ${c.g.u}</span> `}${esc(c.f)}</div>
     <div style="font:600 18px var(--mono)">${c.warn?`<span class="warn" style="font-size:13px">⚠ ${c.warn}</span>`:fmt(c.vol)+' m³'}</div>
@@ -1178,6 +1195,7 @@ function renderSel(){
   P.querySelectorAll('[data-k]').forEach(el=>el.onchange=()=>{const k=el.dataset.k;s[k]=['mult','adj','h'].includes(k)?(+el.value||0):el.value;if(k==='zone')s.zoneAuto=false;if(k==='floor'){const L=libFor(s.floor);if(!L.some(l=>l.code===s.code)){const same=L.find(l=>codeBase(l.code)===codeBase(s.code));if(same)s.code=same.code}}if(k==='mult'&&!s.mult)s.mult=1;refreshDraw();save()});
   $('#selDel').onclick=()=>delShape(s.id);
   $('#selDup').onclick=()=>{const n=JSON.parse(JSON.stringify(s));n.id=uid();const off=20/view.z;n.pts=n.pts.map(p=>[p[0]+off,p[1]+off]);S.shapes.push(n);selId=n.id;refreshDraw();save()};
+  const ls=document.getElementById('liftSplit');if(ls)ls.onclick=()=>liftSplit(S.shapes.find(x=>x.id===selId));
 }
 function renderShapeList(){
   const list=S.shapes.filter(x=>x.sheetId===S.activeSheet);$('#shpCount').textContent=list.length;let tot=0;
@@ -1535,7 +1553,7 @@ function showReview(res,how){
 
 
 /* ---------- 오류 표시 / 진단 ---------- */
-const APP_VER='2026.11.14';const ERRLOG=[];
+const APP_VER='2026.11.14b';const ERRLOG=[];
 function logErr(where,e){ERRLOG.push(`[${new Date().toLocaleTimeString('ko-KR')}] ${where}: ${(e&&e.name?e.name+' ':'')}${(e&&e.message)||e}`);if(ERRLOG.length>30)ERRLOG.shift()}
 window.addEventListener('error',e=>logErr('스크립트',e.error||e.message));
 window.addEventListener('unhandledrejection',e=>logErr('처리 안 된 오류',e.reason));
